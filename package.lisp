@@ -15,9 +15,9 @@
 (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
 
 (defconstant +FIXNUM_BITLEN+ (integer-length most-positive-fixnum))
-
+(defconstant +HASHCODE_BITLEN+ 32)
 (deftype positive-fixnum () '(unsigned-byte #.(integer-length most-positive-fixnum)))
-(deftype hashcode () 'positive-fixnum)
+(deftype hashcode () '(unsigned-byte 32))
 (deftype hash-fn () '(function (t) hashcode))
 (deftype test-fn () '(function (t t) boolean))
 

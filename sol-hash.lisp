@@ -14,32 +14,38 @@
   (hash t :type hash-fn)
   (test t :type test-fn))
 
-(declaim (ftype hash-fn hash))
-(defun hash (x)
-  (loop WITH h OF-TYPE hashcode = (sxhash x)
-        FOR i FROM 0 BELOW +FIXNUM_BITLEN+ BY 8
-    DO 
-    (setf h (+ (ash (ldb (byte 8 0) h) #.(- +FIXNUM_BITLEN+ 8))
-               (* (ash h -8) 13)))
-    FINALLY
-    (return h)))
+(defun bit-reverse (n)
+  (declare (hashcode n)
+           #.*fastest*)
+  (setf n (logior (ash (logand #x55555555 n)  1)
+                  (ash (logand #xAAAAAAAA n) -1))
+        n (logior (ash (logand #x33333333 n)  2)
+                  (ash (logand #xCCCCCCCC n) -2))
+        n (logior (ash (logand #x0F0F0F0F n)  4)
+                  (ash (logand #xF0F0F0F0 n) -4)))
+  (logior (ash (logand n #x000000FF) 24)
+          (ash (logand n #x0000FF00) 8)
+          (ash (logand n #x00FF0000) -8)
+          (ash n -24)))
+
+(defun bucket-id (hash map)
+  (ldb (byte (hashmap-bitlen map) 0) hash))
 
 (defun ordinary-hash (x map)
-  (dpb 1 (byte 2 0) (funcall (hashmap-hash map) x)))
+  (let ((h (funcall (hashmap-hash map) x)))
+    (values (dpb 1 (byte 2 0) (bit-reverse h))
+            (bucket-id h map))))
 
 (defun sentinel-hash (x)
-  (loop FOR i FROM 0 BELOW (integer-length x)
-        FOR j FROM #.(1- +FIXNUM_BITLEN+) DOWNTO 0
-        WHILE (< i j)
-    DO (rotatef (ldb (byte 1 i) x) 
-                (ldb (byte 1 j) x))
-    FINALLY
-    (return x)))
+  (bit-reverse x))
 
-(defun make (&key (size 4) (hash #'hash) (test #'eql))
+
+(defconstant +MAX_HASHCODE+ (1- (ash 1 +HASHCODE_BITLEN+)))
+
+(defun make (&key (size 4) (hash #'sxhash) (test #'eql))
   (let* ((bitlen (ceiling (log size 2)))
          (head (list (make-node :hash 0 :key *sentinel*)
-                     (make-node :hash most-positive-fixnum :key *sentinel*)))
+                     (make-node :hash +MAX_HASHCODE+ :key *sentinel*)))
          (bucket (make-array (expt bitlen 2) :initial-element '())))
     (make-hashmap :hash hash
                   :test test
@@ -65,27 +71,23 @@
       (let* ((parent (get-bucket-from-id (parent-id id) map))
              (hashcode (sentinel-hash id))
              (pred (find-candidate hashcode parent)))
-        (setf (cdr pred) (cons (make-node :hash hashcode :key *sentinel*)
-                               (cddr pred))
+        (setf (cdr pred) (cons (make-node :hash hashcode :key *sentinel*
+                                          :value (- id))
+                               (cdr pred))
               #1# (cdr pred))))))
 
-(defun bucket-id (hash bitlen)
-  (ldb (byte bitlen (- +FIXNUM_BITLEN+ bitlen)) hash))
-
-(defun get-bucket (hash map)
-  (with-slots (bitlen) (the hashmap hash)
-    (get-bucket-from-id (bucket-id hash bitlen) map)))
-
-(defun find-node (key hash map)
+(defun find-node (key map)
   (with-slots (test) (the hashmap map)
-    (let* ((pred (find-candidate hash (get-bucket hash map)))
-           (x (second pred)))
-      (values pred x (and (= hash (node-hash x))
-                          (funcall test key (node-key x)))))))
+    (multiple-value-bind (hash id) (ordinary-hash key map)
+      (let* ((pred (find-candidate hash (get-bucket-from-id id map)))
+             (x (second pred)))
+        (values pred x (and (= hash (node-hash x))
+                            (funcall test key (node-key x)))
+                hash)))))
 
-(defun get (key map &aux (hash (ordinary-hash key map)))
-  (multiple-value-bind (pred node exists?) (find-node key hash map)
-    (declare (ignore pred))
+(defun get (key map)
+  (multiple-value-bind (pred node exists? hash) (find-node key map)
+    (declare (ignore pred hash))
     (if exists?
         (values (node-value node) t)
       (values nil nil))))
@@ -93,17 +95,19 @@
 (defun resize (map)
   (with-slots (buckets bitlen) (the hashmap map)
     (incf bitlen)
-    (setf buckets (adjust-array buckets (expt 2 bitlen) :initial-element '()))))
+    (setf buckets (adjust-array buckets (expt 2 bitlen)
+                                :initial-element '()))))
 
-(defun set-impl (new-value key map &aux (hash (ordinary-hash key map)))
-  (multiple-value-bind (pred node exists?) (find-node key hash map)
+(defun set-impl (new-value key map)
+  (multiple-value-bind (pred node exists? hash) (find-node key map)
     (if exists?
         (setf (node-value node) new-value)
       (with-slots (count buckets) (the hashmap map)
         (when (> (incf count) (length buckets))
           (resize map))
-        (setf (cdr pred) (cons (make-node :hash hash :key key :value new-value)
-                               (cddr pred)))
+        (setf (cdr pred) (cons (make-node :hash hash :key key 
+                                          :value new-value)
+                               (cdr pred)))
         new-value))))
           
 (defun (setf get) (new-value key map)
@@ -128,9 +132,10 @@
        FINALLY
        (return ,return-form))))
 
-(defun remove (key map &aux (hash (ordinary-hash key map)))
-  (multiple-value-bind (pred node exists?) (find-node key hash map)
-    (declare (ignore node))
+(defun remove (key map)
+  (multiple-value-bind (pred node exists? hash) (find-node key map)
+    (declare (ignore node hash))
     (when exists?
+      (decf (hashmap-count map))
       (setf (cdr pred) (cddr pred))
       t)))
