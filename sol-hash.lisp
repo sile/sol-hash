@@ -16,7 +16,7 @@
 
 (defstruct hashmap
   (head '() :type base-node)
-  (buckets #() :type (vector (or null base-node node)))
+  (buckets #() :type (simple-array (or null base-node node)))
   (bitlen 0 :type positive-fixnum)
   (count 0 :type positive-fixnum)
   
@@ -82,6 +82,8 @@
   (dpb 0 (byte 1 (1- (integer-length id))) id))
 
 (defun get-bucket-from-id (id map)
+  (declare #.*fastest*
+           (positive-fixnum id))
   (with-slots (buckets) (the hashmap map)
     (if #1=(aref buckets id)
         #1#
@@ -162,6 +164,7 @@
     (push (funcall fn k v) acc)))
 
 (defun remove (key map)
+  (declare #.*fastest*)
   (multiple-value-bind (pred node hash) (find-node key map)
     (declare (ignore hash))
     (when node
