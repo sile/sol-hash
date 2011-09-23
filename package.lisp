@@ -19,5 +19,4 @@
 
 (eval-when (:compile-toplevel :load-toplevel)
   (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
-  (defconstant +HASHCODE_BITLEN+ 32)
-  (defparameter *SENTINEL* '#:sentinel))
+  (defconstant +HASHCODE_BITLEN+ 32))

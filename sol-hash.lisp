@@ -6,8 +6,10 @@
                  set-impl
                  ))
 
-(defstruct node
-  (hash 0 :type hashcode)
+(defstruct base-node
+  (hash 0 :type hashcode))
+  
+(defstruct (node (:include base-node))
   (key t :type t)
   (value t :type t))
 
@@ -56,8 +58,8 @@
 
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
   (let* ((bitlen (ceiling (log size 2)))
-         (head (list (make-node :hash 0 :key *sentinel*)
-                     (make-node :hash +MAX_HASHCODE+ :key *sentinel*)))
+         (head (list (make-base-node :hash 0)
+                     (make-base-node :hash +MAX_HASHCODE+)))
          (bucket (make-array (expt 2 bitlen) :initial-element '())))
     (make-hashmap :hash hash
                   :test test
@@ -87,8 +89,7 @@
       (let* ((parent (get-bucket-from-id (parent-id id) map))
              (hashcode (sentinel-hash id))
              (pred (find-candidate hashcode parent)))
-        (setf (cdr pred) (cons (make-node :hash hashcode :key *sentinel*
-                                          :value (- id))
+        (setf (cdr pred) (cons (make-base-node :hash hashcode)
                                (cdr pred))
               #1# (cdr pred))))))
 
@@ -142,7 +143,7 @@
 
 (defun map (fn map)
   (loop FOR node IN (hashmap-head map)
-        UNLESS (eq *sentinel* (node-key node))
+        WHEN (typep node 'node)
     COLLECT (funcall fn (node-key node) (node-value node))))
 
 (defmacro each ((key value map &optional return-form) &body body)
@@ -150,7 +151,7 @@
     `(loop FOR ,node IN (hashmap-head ,map)
            FOR ,key = (node-key ,node)
            FOR ,value = (node-value ,node)
-           UNLESS (eq *sentinel* ,key)
+           WHEN (typep ,node 'node)
        DO
        (locally ,@body)
        FINALLY
