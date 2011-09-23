@@ -75,18 +75,24 @@
                pred)))
     (recur head)))
 
-(defun parent-id (id)
+(defun parent-id (id bitlen)
   (declare #.*fastest*
-           (positive-fixnum id))
-  (dpb 0 (byte 1 (1- (integer-length id))) id))
+           (positive-fixnum id)
+           ((mod #.+HASHCODE_BITLEN+) bitlen))
+  ;; most significant を 0 にした後、(それより)上位ビットを 0 で埋める
+  (let* ((i (1- (integer-length id)))
+         (n (dpb 0 (byte 1 i) id)))
+    (declare ((mod #.+HASHCODE_BITLEN+) i))
+    (the positive-fixnum (dpb #.+MAX_HASHCODE+ (byte (- bitlen (1+ i)) (1+ i)) n))))
 
 (defun get-bucket-from-id (id map)
   (declare #.*fastest*
            (positive-fixnum id))
-  (with-slots (buckets) (the hashmap map)
+  (with-slots (bitlen buckets) (the hashmap map)
     (if #1=(aref buckets id)
         #1#
-      (let* ((parent (get-bucket-from-id (parent-id id) map))
+      (let* ((parent-id (parent-id id bitlen))
+             (parent (get-bucket-from-id parent-id map))
              (hashcode (sentinel-hash id))
              (pred (find-candidate hashcode parent)))
         (setf (node-next pred)
