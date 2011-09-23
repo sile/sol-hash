@@ -128,7 +128,9 @@
        FINALLY
        (return ,return-form))))
 
-
-       
-       
-    
+(defun remove (key map &aux (hash (ordinary-hash key map)))
+  (multiple-value-bind (pred node exists?) (find-node key hash map)
+    (declare (ignore node))
+    (when exists?
+      (setf (cdr pred) (cddr pred))
+      t)))
