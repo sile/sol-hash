@@ -7,15 +7,16 @@
                  ))
 
 (defstruct base-node
-  (hash 0 :type hashcode))
+  (hash 0 :type hashcode)
+  (next nil :type (or null base-node)))
   
 (defstruct (node (:include base-node))
   (key t :type t)
   (value t :type t))
 
 (defstruct hashmap
-  (head '() :type list)  ; list of ndoe
-  (buckets #() :type (vector list))
+  (head '() :type base-node)
+  (buckets #() :type (vector (or null base-node node)))
   (bitlen 0 :type positive-fixnum)
   (count 0 :type positive-fixnum)
   
@@ -55,8 +56,9 @@
 
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
   (let* ((bitlen (ceiling (log size 2)))
-         (head (list (make-base-node :hash 0)
-                     (make-base-node :hash +MAX_HASHCODE+)))
+         (head (make-base-node 
+                :hash 0
+                :next (make-base-node :hash +MAX_HASHCODE+)))
          (bucket (make-array (expt 2 bitlen) :initial-element '())))
     (make-hashmap :hash hash
                   :test test
@@ -68,9 +70,9 @@
 (defun find-candidate (hash head)
   (declare (hashcode hash)
            #.*fastest*)
-  (labels ((recur (pred &aux (cur (second pred)))
+  (labels ((recur (pred &aux (cur (base-node-next pred)))
              (if (> hash (node-hash cur))
-                 (recur (cdr pred))
+                 (recur (base-node-next pred))
                pred)))
     (recur head)))
 
@@ -86,9 +88,10 @@
       (let* ((parent (get-bucket-from-id (parent-id id) map))
              (hashcode (sentinel-hash id))
              (pred (find-candidate hashcode parent)))
-        (setf (cdr pred) (cons (make-base-node :hash hashcode)
-                               (cdr pred))
-              #1# (cdr pred))))))
+        (setf (base-node-next pred)
+              (make-base-node :hash hashcode
+                              :next (base-node-next pred))
+              #1# (base-node-next pred))))))
 
 (defun find-node (key map)
   (declare #.*fastest*)
@@ -96,13 +99,13 @@
     (multiple-value-bind (hash id) (ordinary-hash key map)
       (declare (hashcode hash))
       (let* ((pred (find-candidate hash (get-bucket-from-id id map)))
-             (x (second pred)))
-        (labels ((recur (pred &aux (cur (second pred)))
+             (x (base-node-next pred)))
+        (labels ((recur (pred &aux (cur (base-node-next pred)))
                    (if (/= hash (node-hash x))
                        (values pred nil hash)
                      (if (funcall test key (node-key x))
                          (values pred cur hash)
-                       (recur (cdr pred))))))
+                       (recur (base-node-next pred))))))
           (recur pred))))))
 
 (defun get (key map)
@@ -129,9 +132,9 @@
         (when (> (the positive-fixnum (incf count))
                  (the positive-fixnum (length buckets)))
           (resize map))
-        (setf (cdr pred) (cons (make-node :hash hash :key key 
-                                          :value new-value)
-                               (cdr pred)))
+        (setf (base-node-next pred)
+              (make-node :hash hash :key key :value new-value
+                         :next (base-node-next pred)))
         new-value))))
           
 (defun (setf get) (new-value key map)
@@ -142,26 +145,26 @@
   (declare #.*fastest*)
   (hashmap-count map))
 
-(defun map (fn map)
-  (loop FOR node IN (hashmap-head map)
-        WHEN (typep node 'node)
-    COLLECT (funcall fn (node-key node) (node-value node))))
-
 (defmacro each ((key value map &optional return-form) &body body)
   (let ((node (gensym)))
-    `(loop FOR ,node IN (hashmap-head ,map)
-           FOR ,key = (node-key ,node)
-           FOR ,value = (node-value ,node)
+    `(loop FOR ,node = (hashmap-head ,map) THEN (base-node-next ,node)
+           WHILE ,node
            WHEN (typep ,node 'node)
        DO
-       (locally ,@body)
+       (let ((,key (node-key ,node))
+             (,value (node-value ,node)))
+         ,@body)
        FINALLY
        (return ,return-form))))
+
+(defun map (fn map &aux acc)
+  (each (k v map (nreverse acc))
+    (push (funcall fn k v) acc)))
 
 (defun remove (key map)
   (multiple-value-bind (pred node hash) (find-node key map)
     (declare (ignore hash))
     (when node
       (decf (hashmap-count map))
-      (setf (cdr pred) (cddr pred))
+      (setf #1=(base-node-next pred) (base-node-next #1#))
       t)))
