@@ -3,7 +3,7 @@
 (declaim (inline bucket-id ordinary-hash sentinel-hash
                  bit-reverse parent-id
                  find-candidate find-node
-                 set-impl
+                 set-impl make-node make-base-node
                  ))
 
 (defstruct base-node
@@ -53,9 +53,6 @@
            #.*fastest*)
   (bit-reverse x))
 
-
-(defconstant +MAX_HASHCODE+ (1- (ash 1 +HASHCODE_BITLEN+)))
-
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
   (let* ((bitlen (ceiling (log size 2)))
          (head (list (make-base-node :hash 0)
@@ -100,15 +97,19 @@
       (declare (hashcode hash))
       (let* ((pred (find-candidate hash (get-bucket-from-id id map)))
              (x (second pred)))
-        (values pred x (and (= hash (node-hash x))
-                            (funcall test key (node-key x)))
-                hash)))))
+        (labels ((recur (pred &aux (cur (second pred)))
+                   (if (/= hash (node-hash x))
+                       (values pred nil hash)
+                     (if (funcall test key (node-key x))
+                         (values pred cur hash)
+                       (recur (cdr pred))))))
+          (recur pred))))))
 
 (defun get (key map)
   (declare #.*fastest*)
-  (multiple-value-bind (pred node exists? hash) (find-node key map)
+  (multiple-value-bind (pred node hash) (find-node key map)
     (declare (ignore pred hash))
-    (if exists?
+    (if node
         (values (node-value node) t)
       (values nil nil))))
 
@@ -121,8 +122,8 @@
 
 (defun set-impl (new-value key map)
   (declare #.*fastest*)
-  (multiple-value-bind (pred node exists? hash) (find-node key map)
-    (if exists?
+  (multiple-value-bind (pred node hash) (find-node key map)
+    (if node
         (setf (node-value node) new-value)
       (with-slots (count buckets) (the hashmap map)
         (when (> (the positive-fixnum (incf count))
@@ -158,9 +159,9 @@
        (return ,return-form))))
 
 (defun remove (key map)
-  (multiple-value-bind (pred node exists? hash) (find-node key map)
-    (declare (ignore node hash))
-    (when exists?
+  (multiple-value-bind (pred node hash) (find-node key map)
+    (declare (ignore hash))
+    (when node
       (decf (hashmap-count map))
       (setf (cdr pred) (cddr pred))
       t)))

@@ -19,4 +19,5 @@
 
 (eval-when (:compile-toplevel :load-toplevel)
   (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
-  (defconstant +HASHCODE_BITLEN+ 32))
+  (defconstant +HASHCODE_BITLEN+ 32)
+  (defconstant +MAX_HASHCODE+ (1- (ash 1 32))))
