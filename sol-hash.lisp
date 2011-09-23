@@ -69,7 +69,7 @@
 (defun find-candidate (hash head)
   (declare (hashcode hash)
            #.*fastest*)
-  (labels ((recur (pred &aux (cur (base-node-next pred)))
+  (labels ((recur (pred &aux (cur (node-next pred)))
              (if (> hash (node-hash cur))
                  (recur cur)
                pred)))
@@ -89,17 +89,17 @@
       (let* ((parent (get-bucket-from-id (parent-id id) map))
              (hashcode (sentinel-hash id))
              (pred (find-candidate hashcode parent)))
-        (setf (base-node-next pred)
+        (setf (node-next pred)
               (make-base-node :hash hashcode
-                              :next (base-node-next pred))
-              #1# (base-node-next pred))))))
+                              :next (node-next pred))
+              #1# (node-next pred))))))
 
 (defun find-node (key map)
   (declare #.*fastest*)
   (with-slots (test) (the hashmap map)
     (multiple-value-bind (hash id) (ordinary-hash key map)
       (declare (hashcode hash))
-      (labels ((recur (pred &aux (cur (base-node-next pred)))
+      (labels ((recur (pred &aux (cur (node-next pred)))
                  (if (/= hash (node-hash cur))
                      (values pred nil hash)
                    (if (funcall test key (node-key cur))
@@ -131,9 +131,9 @@
         (when (> (the positive-fixnum (incf count))
                  (the positive-fixnum (length buckets)))
           (resize map))
-        (setf (base-node-next pred)
+        (setf (node-next pred)
               (make-node :hash hash :key key :value new-value
-                         :next (base-node-next pred)))
+                         :next (node-next pred)))
         new-value))))
           
 (defun (setf get) (new-value key map)
@@ -146,7 +146,7 @@
 
 (defmacro each ((key value map &optional return-form) &body body)
   (let ((node (gensym)))
-    `(loop FOR ,node = (hashmap-head ,map) THEN (base-node-next ,node)
+    `(loop FOR ,node = (hashmap-head ,map) THEN (node-next ,node)
            WHILE ,node
            WHEN (typep ,node 'node)
        DO
@@ -166,5 +166,5 @@
     (declare (ignore hash))
     (when node
       (decf (hashmap-count map))
-      (setf #1=(base-node-next pred) (base-node-next #1#))
+      (setf #1=(node-next pred) (node-next #1#))
       t)))
