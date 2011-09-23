@@ -3,8 +3,7 @@
 (declaim (inline bucket-id ordinary-hash sentinel-hash
                  bit-reverse parent-id
                  find-candidate find-node
-                 set-impl make-node make-base-node
-                 ))
+                 set-impl make-node make-base-node))
 
 (defstruct base-node
   (hash 0 :type hashcode)
@@ -72,7 +71,7 @@
            #.*fastest*)
   (labels ((recur (pred &aux (cur (base-node-next pred)))
              (if (> hash (node-hash cur))
-                 (recur (base-node-next pred))
+                 (recur cur)
                pred)))
     (recur head)))
 
@@ -100,23 +99,21 @@
   (with-slots (test) (the hashmap map)
     (multiple-value-bind (hash id) (ordinary-hash key map)
       (declare (hashcode hash))
-      (let* ((pred (find-candidate hash (get-bucket-from-id id map)))
-             (x (base-node-next pred)))
-        (labels ((recur (pred &aux (cur (base-node-next pred)))
-                   (if (/= hash (node-hash x))
-                       (values pred nil hash)
-                     (if (funcall test key (node-key x))
-                         (values pred cur hash)
-                       (recur (base-node-next pred))))))
-          (recur pred))))))
+      (labels ((recur (pred &aux (cur (base-node-next pred)))
+                 (if (/= hash (node-hash cur))
+                     (values pred nil hash)
+                   (if (funcall test key (node-key cur))
+                       (values pred cur hash)
+                     (recur cur)))))
+        (recur (find-candidate hash (get-bucket-from-id id map)))))))
 
-(defun get (key map)
+(defun get (key map &optional default)
   (declare #.*fastest*)
   (multiple-value-bind (pred node hash) (find-node key map)
     (declare (ignore pred hash))
     (if node
         (values (node-value node) t)
-      (values nil nil))))
+      (values default nil))))
 
 (defun resize (map)
   (declare #.*fastest*)
