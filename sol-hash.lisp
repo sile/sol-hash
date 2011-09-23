@@ -1,5 +1,11 @@
 (in-package :sol-hash)
 
+(declaim (inline bucket-id ordinary-hash sentinel-hash
+                 bit-reverse parent-id
+                 find-candidate find-node
+                 set-impl
+                 ))
+
 (defstruct node
   (hash 0 :type hashcode)
   (key t :type t)
@@ -29,14 +35,20 @@
           (ash n -24)))
 
 (defun bucket-id (hash map)
-  (ldb (byte (hashmap-bitlen map) 0) hash))
+  (declare (hashcode hash)
+           #.*fastest*)
+  (ldb (byte (the (mod #.+HASHCODE_BITLEN+) (hashmap-bitlen map)) 0) hash))
 
 (defun ordinary-hash (x map)
-  (let ((h (funcall (hashmap-hash map) x)))
+  (declare (hashcode x)
+           #.*fastest*)
+  (let ((h (ldb (byte +HASHCODE_BITLEN+ 0) (funcall (hashmap-hash map) x))))
     (values (dpb 1 (byte 2 0) (bit-reverse h))
             (bucket-id h map))))
 
 (defun sentinel-hash (x)
+  (declare (hashcode x)
+           #.*fastest*)
   (bit-reverse x))
 
 
@@ -46,7 +58,7 @@
   (let* ((bitlen (ceiling (log size 2)))
          (head (list (make-node :hash 0 :key *sentinel*)
                      (make-node :hash +MAX_HASHCODE+ :key *sentinel*)))
-         (bucket (make-array (expt bitlen 2) :initial-element '())))
+         (bucket (make-array (expt 2 bitlen) :initial-element '())))
     (make-hashmap :hash hash
                   :test test
                   :head head
@@ -55,6 +67,8 @@
                                   bucket))))
 
 (defun find-candidate (hash head)
+  (declare (hashcode hash)
+           #.*fastest*)
   (labels ((recur (pred &aux (cur (second pred)))
              (if (> hash (node-hash cur))
                  (recur (cdr pred))
@@ -62,6 +76,8 @@
     (recur head)))
 
 (defun parent-id (id)
+  (declare #.*fastest*
+           (positive-fixnum id))
   (dpb 0 (byte 1 (1- (integer-length id))) id))
 
 (defun get-bucket-from-id (id map)
@@ -77,8 +93,10 @@
               #1# (cdr pred))))))
 
 (defun find-node (key map)
+  (declare #.*fastest*)
   (with-slots (test) (the hashmap map)
     (multiple-value-bind (hash id) (ordinary-hash key map)
+      (declare (hashcode hash))
       (let* ((pred (find-candidate hash (get-bucket-from-id id map)))
              (x (second pred)))
         (values pred x (and (= hash (node-hash x))
@@ -86,6 +104,7 @@
                 hash)))))
 
 (defun get (key map)
+  (declare #.*fastest*)
   (multiple-value-bind (pred node exists? hash) (find-node key map)
     (declare (ignore pred hash))
     (if exists?
@@ -93,17 +112,20 @@
       (values nil nil))))
 
 (defun resize (map)
+  (declare #.*fastest*)
   (with-slots (buckets bitlen) (the hashmap map)
     (incf bitlen)
     (setf buckets (adjust-array buckets (expt 2 bitlen)
                                 :initial-element '()))))
 
 (defun set-impl (new-value key map)
+  (declare #.*fastest*)
   (multiple-value-bind (pred node exists? hash) (find-node key map)
     (if exists?
         (setf (node-value node) new-value)
       (with-slots (count buckets) (the hashmap map)
-        (when (> (incf count) (length buckets))
+        (when (> (the positive-fixnum (incf count))
+                 (the positive-fixnum (length buckets)))
           (resize map))
         (setf (cdr pred) (cons (make-node :hash hash :key key 
                                           :value new-value)
@@ -111,9 +133,11 @@
         new-value))))
           
 (defun (setf get) (new-value key map)
+  (declare #.*fastest*)
   (set-impl new-value key map))
 
 (defun count (map)
+  (declare #.*fastest*)
   (hashmap-count map))
 
 (defun map (fn map)

@@ -12,16 +12,12 @@
            hash))
 (in-package :sol-hash)
 
-(defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
-
-(defconstant +FIXNUM_BITLEN+ (integer-length most-positive-fixnum))
-(defconstant +HASHCODE_BITLEN+ 32)
 (deftype positive-fixnum () '(unsigned-byte #.(integer-length most-positive-fixnum)))
 (deftype hashcode () '(unsigned-byte 32))
 (deftype hash-fn () '(function (t) hashcode))
 (deftype test-fn () '(function (t t) boolean))
 
-(defparameter *masks*
-  (loop REPEAT 4 COLLECT (random most-positive-fixnum)))
-
-(defparameter *SENTINEL* '#:sentinel)
+(eval-when (:compile-toplevel :load-toplevel)
+  (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
+  (defconstant +HASHCODE_BITLEN+ 32)
+  (defparameter *SENTINEL* '#:sentinel))
