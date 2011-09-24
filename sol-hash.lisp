@@ -7,7 +7,7 @@
                  make-map map-buckets map-bitlen map-count
                  map-upper-border map-lower-border map-hash-fn map-test-fn
                  
-                 next
+                 next sentinel sentinel? ordinal?
                  bit-reverse lower-bits mask-lower-bits
                  hashcode-and-bucket-id predecessor-id parent-id
                  find-candidate set-pred-next find-node
@@ -15,11 +15,12 @@
 
 ;;;;;;;;;;
 ;;; struct
-(defstruct node
-  (next nil :type (or null node))
-  (hash   0 :type hashcode)
-  (key    t :type t)
-  (value  t :type t))
+(eval-when (:compile-toplevel :load-toplevel)
+  (defstruct node
+    (next nil :type (or null node))
+    (hash   0 :type hashcode)
+    (key    t :type t)
+    (value  t :type t)))
 
 (defstruct map
   (buckets    #() :type buckets)
@@ -40,7 +41,11 @@
 (eval-when (:compile-toplevel :load-toplevel)
   (unless (constantp '+SENTINEL+)
     (defconstant +SENTINEL+ (make-node :hash +MAX_HASHCODE+))))
-              
+
+(defun sentinel () +SENTINEL+) 
+(defun sentinel? (node) (eq node (sentinel)))
+(defun ordinal? (node) (not (sentinel? node)))
+                
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; internal function
@@ -99,19 +104,19 @@
              (if (> hash (node-hash cur))
                  (recur cur (next cur))
                (values pred cur))))
-    (recur +SENTINEL+ head)))
+    (recur (sentinel) head)))
 
 (defun set-pred-next (pred-node buckets bucket-id &key next)
   (declare (buckets buckets)
            (positive-fixnum bucket-id)
            (node pred-node next))
-  (if (eq pred-node +SENTINEL+)
+  (if (sentinel? pred-node)
       (setf (aref buckets bucket-id) next)
     (setf (node-next pred-node) next)))
 
 (defun get-bucket (bucket-id bucket-hash map)
   (with-slots (buckets bitlen) (the map map)
-    (if (or (not (eq (aref buckets bucket-id) +SENTINEL+))
+    (if (or (ordinal? (aref buckets bucket-id))
             (zerop bucket-id))
         (aref buckets bucket-id)
       (multiple-value-bind (pred-bucket-id pred-bucket-hash)
@@ -119,7 +124,7 @@
         (let ((pred-bucket (get-bucket pred-bucket-id pred-bucket-hash map)))
           (multiple-value-bind (pred node)
                                (find-candidate bucket-hash pred-bucket)
-            (set-pred-next pred buckets pred-bucket-id :next +SENTINEL+)
+            (set-pred-next pred buckets pred-bucket-id :next (sentinel))
             (setf (aref buckets bucket-id) node)))))))
 
 (defun find-node (key map)
@@ -143,10 +148,9 @@
   (let ((buckets (gensym))
         (bucket-size (gensym)))
     `(with-slots ((,buckets buckets) (,bucket-size bucket-size)) (the map ,map)
-       (loop FOR ,bucket-id fixnum FROM ,start 
-                                   BELOW ,(or end bucket-size)
+       (loop FOR ,bucket-id fixnum FROM ,start BELOW ,(or end bucket-size)
              FOR ,head-node = (aref ,buckets ,bucket-id) 
-             UNLESS (eq ,head-node +SENTINEL+)
+             UNLESS (sentinel? ,head-node)
          DO
          (locally ,@body)
          FINALLY
@@ -158,12 +162,12 @@
     (let ((new-size (the positive-fixnum (* 2 bucket-size))))
       (update-size-and-borders map new-size)
       (setf buckets (adjust-array buckets new-size :element-type 'bucket
-                                  :initial-element +SENTINEL+)))))
+                                                   :initial-element (sentinel))))))
 
 (defun rehash-bucket (head bucket-id map)
   (let ((tail (loop FOR node = head THEN next
                     FOR next = (next node)
-                    UNTIL (eq next +SENTINEL+)
+                    UNTIL (sentinel? next)
                     FINALLY (return node)))
         (parent-id (parent-id bucket-id)))
 
@@ -206,7 +210,8 @@
   (declare #.*interface*)
   (let* ((bitlen (ceiling (log (max 2 size) 2)))
          (bucket-size (expt 2 bitlen))
-         (buckets (make-array bucket-size :element-type 'bucket :initial-element +SENTINEL+)))
+         (buckets (make-array bucket-size :element-type 'bucket 
+                                          :initial-element (sentinel))))
     (multiple-value-bind (lower upper) (calc-borders bucket-size)
       (make-map :hash-fn hash
                 :test-fn test
@@ -264,7 +269,7 @@
         (head (gensym)))
     `(each-bucket (,head ,id ,map :return ,return-form)
        (loop FOR ,node = ,head THEN (next ,node)
-             UNTIL (eq ,node +SENTINEL+)
+             UNTIL (sentinel? ,node)
          DO
          (let ((,key (node-key ,node))
                (,value (node-value ,node)))
