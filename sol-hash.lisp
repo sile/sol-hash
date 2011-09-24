@@ -21,13 +21,14 @@
   (value  t :type t))
 
 (defstruct map
-  (buckets #() :type (simple-array (or null node)))
-  (bitlen    0 :type positive-fixnum)
-  (count     0 :type positive-fixnum)
+  (buckets    #() :type (simple-array (or null node)))
+  (bucket-size  0 :type positive-fixnum)
+  (bitlen       0 :type positive-fixnum)
+  (count        0 :type positive-fixnum)
   (upper-border 0 :type positive-fixnum) 
   (lower-border 0 :type positive-fixnum) 
-  (hash-fn   t :type hash-fn)
-  (test-fn   t :type test-fn))
+  (hash-fn      t :type hash-fn)
+  (test-fn      t :type test-fn))
 
 (defmethod print-object ((o map) stream)
   (declare #.*normal*)
@@ -131,10 +132,11 @@
 
 (defmacro each-bucket ((head-node bucket-id map &key (start 0) end return) 
                        &body body)
-  (let ((buckets (gensym)))
-    `(with-slots ((,buckets buckets)) (the map ,map)
+  (let ((buckets (gensym))
+        (bucket-size (gensym)))
+    `(with-slots ((,buckets buckets) (,bucket-size bucket-size)) (the map ,map)
        (loop FOR ,bucket-id fixnum FROM ,start 
-                                   BELOW ,(or end `(length ,buckets))
+                                   BELOW ,(or end bucket-size)
              FOR ,head-node = (aref ,buckets ,bucket-id) 
              WHEN ,head-node
          DO
@@ -143,11 +145,11 @@
          (return ,return)))))
 
 (defun upsize (map)
-  (with-slots (buckets bitlen lower-border upper-border) (the map map)
+  (with-slots (buckets bucket-size bitlen) (the map map)
     (incf bitlen)
-    (let ((new-size (* 2 (length buckets))))
-      (setf buckets (adjust-array buckets new-size :initial-element '())
-            (values lower-border upper-border) (calc-borders new-size)))))
+    (let ((new-size (the positive-fixnum (* 2 bucket-size))))
+      (update-size-and-borders map new-size)
+      (setf buckets (adjust-array buckets new-size :initial-element '())))))
 
 (defun rehash-bucket (head bucket-id map)
   (let ((tail (loop FOR node = head THEN next
@@ -164,21 +166,26 @@
         (setf (node-next tail) succ)))))
 
 (defun downsize (map)
-  (with-slots (buckets bitlen lower-border upper-border) (the map map)
+  (with-slots (buckets bucket-size bitlen) (the map map)
     (decf bitlen)
 
-    (let ((new-size (floor (length buckets) 2)))
-      (each-bucket (head bucket-id map :start new-size)
+    (let ((old-size bucket-size)
+          (new-size (floor bucket-size 2)))
+      (each-bucket (head bucket-id map :start new-size :end old-size)
         (rehash-bucket head bucket-id map))
 
-      (setf buckets (adjust-array buckets new-size)
-            (values lower-border upper-border) (calc-borders new-size)))))
+      (update-size-and-borders map new-size))))
 
 (defun calc-borders (size)
   (declare (positive-fixnum size)
            #.*muffle-note*)
   (values (floor (* 0.25 size))
-          (floor (* 0.75 size))))
+          (ceiling (* 0.75 size))))
+
+(defun update-size-and-borders (map new-size)
+    (with-slots (bucket-size lower-border upper-border) (the map map)
+      (setf (values lower-border upper-border) (calc-borders new-size)
+            bucket-size new-size)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;
@@ -189,14 +196,16 @@
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
   (declare #.*interface*)
   (let* ((bitlen (ceiling (log (max 2 size) 2)))
-         (buckets (make-array (expt 2 bitlen) :initial-element '())))
-    (multiple-value-bind (lower upper) (calc-borders (length buckets))
+         (bucket-size (expt 2 bitlen))
+         (buckets (make-array bucket-size :initial-element '())))
+    (multiple-value-bind (lower upper) (calc-borders bucket-size)
       (make-map :hash-fn hash
                 :test-fn test
                 :bitlen bitlen
                 :upper-border upper
                 :lower-border lower
-                :buckets buckets))))
+                :buckets buckets
+                :bucket-size bucket-size))))
 
 (defun get (key map &optional default)
   (declare #.*interface*)

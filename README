@@ -1,1 +1,2 @@
 ・『The Art Of Multiprocessor Programming』の13章にあるLockFreeHashのシーケンシャル(非並列)版
+・番兵ノードを除去した辺りから、だんだん↑のそれとは別物になってきた・・・
