@@ -125,19 +125,33 @@
     (setf buckets (adjust-array buckets (expt 2 bitlen)
                                 :initial-element '()))))
 
-(defun set-impl (new-value key map)
+(defun resize2 (map)
+  (declare #.*fastest*)
+  (with-slots (buckets bitlen) (the hashmap map)
+    (decf bitlen)
+    (loop FOR i fixnum FROM (expt 2 bitlen) BELOW (expt 2 (1+ bitlen))
+      DO
+      (loop FOR node = (aref buckets i) THEN (node-next node)
+            WHILE node
+        DO
+        (set-impl (node-value node) (node-key node) map nil)))
+    (setf buckets (adjust-array buckets (expt 2 bitlen)
+                                :initial-element '()))))
+
+(defun set-impl (new-value key map &optional (resize t))
   (declare #.*fastest*)
   (multiple-value-bind (exists? pred node hash id) (find-node key map)
     (if exists?
         (setf (node-value node) new-value)
       (with-slots (count buckets) (the hashmap map)
-        (when (> (the positive-fixnum (incf count))
+        (when resize
+         (when (> (the positive-fixnum (incf count))
                  (locally  #|xxx|#
                   (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
                   (the positive-fixnum 
                       (ceiling (* 0.75 
                                   (the positive-fixnum (length buckets)))))))
-          (resize map))
+          (resize map)))
                
         (let ((new-node (make-node :hash hash :key key :value new-value
                                    :next node)))
@@ -177,8 +191,12 @@
   (multiple-value-bind (exists? pred node hash id) (find-node key map)
     (declare (ignore hash))
     (when exists?
-      (decf (hashmap-count map))
       (if pred
           (setf (node-next pred) (node-next node))
         (setf (aref (hashmap-buckets map) id) (node-next node)))
+
+      (when (< (decf (hashmap-count map))
+               (ceiling (* 0.75 (length (hashmap-buckets map)))))
+        (when (> (hashmap-count map) 4) ;xxx
+          (resize2 map)))
       t)))
