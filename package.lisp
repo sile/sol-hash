@@ -14,7 +14,7 @@
 (deftype hashcode () '(unsigned-byte 32))
 (deftype hash-fn () '(function (t) hashcode))
 (deftype test-fn () '(function (t t) boolean))
-(deftype bucket () '(or null node))
+(deftype bucket () 'node)
 (deftype buckets () '(simple-array bucket))
 
 (eval-when (:compile-toplevel :load-toplevel)

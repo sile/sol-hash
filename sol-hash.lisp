@@ -6,7 +6,8 @@
                  make-node node-next node-hash node-key node-value
                  make-map map-buckets map-bitlen map-count
                  map-upper-border map-lower-border map-hash-fn map-test-fn
-
+                 
+                 next
                  bit-reverse lower-bits mask-lower-bits
                  hashcode-and-bucket-id predecessor-id parent-id
                  find-candidate set-pred-next find-node
@@ -35,10 +36,18 @@
   (print-unreadable-object (o stream :type t :identity t)
     (with-slots (count) (the map o)
       (format stream "~s ~s" :count count))))
+
+(eval-when (:compile-toplevel :load-toplevel)
+  (unless (constantp '+SENTINEL+)
+    (defconstant +SENTINEL+ (make-node :hash +MAX_HASHCODE+))))
               
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; internal function
+(defun next (node)
+  (declare (node node))
+  (the node (node-next node)))
+
 (defun bit-reverse (n)
   (declare (hashcode n))
   (setf n (logior (ash (logand #x55555555 n)  1)
@@ -87,32 +96,31 @@
 (defun find-candidate (hash head)
   (declare (hashcode hash))
   (labels ((recur (pred cur)
-             (if (and cur (> hash (node-hash cur)))
-                 (recur cur (node-next cur))
+             (if (> hash (node-hash cur))
+                 (recur cur (next cur))
                (values pred cur))))
-    (recur nil head)))
+    (recur +SENTINEL+ head)))
 
 (defun set-pred-next (pred-node buckets bucket-id &key next)
   (declare (buckets buckets)
            (positive-fixnum bucket-id)
-           ((or null node) pred-node next))
-  (if pred-node
-      (setf (node-next pred-node) next)
-    (setf (aref buckets bucket-id) next)))
+           (node pred-node next))
+  (if (eq pred-node +SENTINEL+)
+      (setf (aref buckets bucket-id) next)
+    (setf (node-next pred-node) next)))
 
 (defun get-bucket (bucket-id bucket-hash map)
   (with-slots (buckets bitlen) (the map map)
-    (if (aref buckets bucket-id)
+    (if (or (not (eq (aref buckets bucket-id) +SENTINEL+))
+            (zerop bucket-id))
         (aref buckets bucket-id)
-      (when (plusp bucket-id)
-        (multiple-value-bind (pred-bucket-id pred-bucket-hash)
-                             (predecessor-id bucket-hash bitlen)
-          (let ((pred-bucket (get-bucket pred-bucket-id pred-bucket-hash map)))
-            (multiple-value-bind (pred node)
-                                 (find-candidate bucket-hash pred-bucket)
-              (when node
-                (set-pred-next pred buckets pred-bucket-id :next nil)
-                (setf (aref buckets bucket-id) node)))))))))
+      (multiple-value-bind (pred-bucket-id pred-bucket-hash)
+                           (predecessor-id bucket-hash bitlen)
+        (let ((pred-bucket (get-bucket pred-bucket-id pred-bucket-hash map)))
+          (multiple-value-bind (pred node)
+                               (find-candidate bucket-hash pred-bucket)
+            (set-pred-next pred buckets pred-bucket-id :next +SENTINEL+)
+            (setf (aref buckets bucket-id) node)))))))
 
 (defun find-node (key map)
   (with-slots (test-fn) (the map map)
@@ -123,11 +131,11 @@
                            (find-candidate hash 
                                            (get-bucket bucket-id bucket-hash map))
         (labels ((recur (pred cur)
-                   (if (or (null cur) (/= hash (node-hash cur)))
+                   (if (/= hash (node-hash cur))
                        (values nil cur pred bucket-id hash)
                      (if (funcall test-fn key (node-key cur))
                          (values t cur pred bucket-id hash)
-                       (recur cur (node-next cur))))))
+                       (recur cur (next cur))))))
           (recur pred cur))))))
 
 (defmacro each-bucket ((head-node bucket-id map &key (start 0) end return) 
@@ -138,7 +146,7 @@
        (loop FOR ,bucket-id fixnum FROM ,start 
                                    BELOW ,(or end bucket-size)
              FOR ,head-node = (aref ,buckets ,bucket-id) 
-             WHEN ,head-node
+             UNLESS (eq ,head-node +SENTINEL+)
          DO
          (locally ,@body)
          FINALLY
@@ -149,12 +157,13 @@
     (incf bitlen)
     (let ((new-size (the positive-fixnum (* 2 bucket-size))))
       (update-size-and-borders map new-size)
-      (setf buckets (adjust-array buckets new-size :initial-element '())))))
+      (setf buckets (adjust-array buckets new-size :element-type 'bucket
+                                  :initial-element +SENTINEL+)))))
 
 (defun rehash-bucket (head bucket-id map)
   (let ((tail (loop FOR node = head THEN next
-                    FOR next = (node-next node)
-                    WHILE next
+                    FOR next = (next node)
+                    UNTIL (eq next +SENTINEL+)
                     FINALLY (return node)))
         (parent-id (parent-id bucket-id)))
 
@@ -197,7 +206,7 @@
   (declare #.*interface*)
   (let* ((bitlen (ceiling (log (max 2 size) 2)))
          (bucket-size (expt 2 bitlen))
-         (buckets (make-array bucket-size :initial-element '())))
+         (buckets (make-array bucket-size :element-type 'bucket :initial-element +SENTINEL+)))
     (multiple-value-bind (lower upper) (calc-borders bucket-size)
       (make-map :hash-fn hash
                 :test-fn test
@@ -244,7 +253,7 @@
     (declare #.*fastest*)
     (when exists?
       (with-slots (buckets count lower-border) (the map map)
-        (set-pred-next pred buckets bucket-id :next (node-next node))
+        (set-pred-next pred buckets bucket-id :next (next node))
         (when (< (the positive-fixnum (decf count)) lower-border)
           (downsize map)))
       t)))
@@ -254,8 +263,8 @@
         (node (gensym))
         (head (gensym)))
     `(each-bucket (,head ,id ,map :return ,return-form)
-       (loop FOR ,node = ,head THEN (node-next ,node)
-             WHILE ,node
+       (loop FOR ,node = ,head THEN (next ,node)
+             UNTIL (eq ,node +SENTINEL+)
          DO
          (let ((,key (node-key ,node))
                (,value (node-value ,node)))
