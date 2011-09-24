@@ -4,6 +4,7 @@
   (:export make
            get
            remove
+           clear
            count
            map
            each))

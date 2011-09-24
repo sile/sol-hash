@@ -1,11 +1,11 @@
 (in-package :sol-hash)
 
 (declaim #.*fastest*
-         (inline make get (setf get) remove map count
+         (inline make get (setf get) remove map count clear
 
                  make-node node-next node-hash node-key node-value
                  make-map map-buckets map-bitlen map-count
-                 map-upper-border map-hash-fn map-test-fn
+                 map-resize-border map-hash-fn map-test-fn
                  
                  next sentinel sentinel? ordinal?
                  bit-reverse lower-bits
@@ -27,8 +27,8 @@
   (bucket-size  0 :type positive-fixnum)
   (bitlen       0 :type hashcode-width)
   (count        0 :type positive-fixnum)
-  (upper-border 0 :type positive-fixnum)
-  (rehash-threshold 0 :type number)
+  (resize-border    0 :type positive-fixnum)
+  (resize-threshold 0 :type number)
   (hash-fn      t :type hash-fn)
   (test-fn      t :type test-fn))
 
@@ -150,11 +150,11 @@
 
 (defun update-size-and-borders (map new-size)
   (declare (positive-fixnum new-size))
-  (with-slots (buckets bucket-size upper-border rehash-threshold) (the map map)
+  (with-slots (buckets bucket-size resize-border resize-threshold) (the map map)
     (when (< bucket-size new-size)
       (setf buckets (adjust-array buckets new-size :element-type 'bucket
                                                    :initial-element (sentinel))))
-    (setf upper-border (calc-border new-size rehash-threshold)
+    (setf resize-border (calc-border new-size resize-threshold)
           bucket-size new-size)))
 
 
@@ -175,8 +175,8 @@
      (make-map :hash-fn hash
                :test-fn test
                :bitlen bitlen
-               :upper-border (calc-border bucket-size rehash-threshold)
-               :rehash-threshold rehash-threshold
+               :resize-border (calc-border bucket-size rehash-threshold)
+               :resize-threshold rehash-threshold
                :buckets buckets
                :bucket-size bucket-size))))
 
@@ -192,12 +192,12 @@
   (multiple-value-bind (exists? node pred bucket-id hash) (find-node key map)
     (if exists?
           (setf (node-value node) new-value)
-      (with-slots (buckets count upper-border) (the map map)
+      (with-slots (buckets count resize-border) (the map map)
          (set-pred-next pred buckets bucket-id 
                         :next (make-node :key key :value new-value
                                          :hash hash :next node))
          (incf count)
-         (when (> count upper-border)
+         (when (> count resize-border)
            (resize map))
          new-value))))
           
@@ -238,3 +238,19 @@
            (function fn))
   (each (k v map (nreverse acc))
     (push (funcall fn k v) acc)))
+
+(defun clear (map)
+  (declare #.*interface*)
+  (locally
+   (declare #.*fastest*)
+   (with-slots (buckets bucket-size bitlen count
+                resize-border resize-threshold) (the map map)
+     (setf bucket-size 4
+           bitlen 2
+           count 0
+           resize-border (calc-border 4 resize-threshold))
+     (fill buckets (sentinel)))
+   t))
+
+
+          
