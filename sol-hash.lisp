@@ -23,7 +23,11 @@
   (hash-fn   t :type hash-fn)
   (test-fn   t :type test-fn))
 
-;; TODO: print-object
+(defmethod print-object ((o map) stream)
+  (print-unreadable-object (o stream :type t :identity t)
+    (with-slots (count) (the map o)
+      (format stream "~s ~s" :count count))))
+              
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; internal function
