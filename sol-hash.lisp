@@ -21,7 +21,7 @@
   (value  t :type t))
 
 (defstruct map
-  (buckets    #() :type (simple-array (or null node)))
+  (buckets    #() :type buckets)
   (bucket-size  0 :type positive-fixnum)
   (bitlen       0 :type positive-fixnum)
   (count        0 :type positive-fixnum)
@@ -93,7 +93,7 @@
     (recur nil head)))
 
 (defun set-pred-next (pred-node buckets bucket-id &key next)
-  (declare ((simple-array (or null node)) buckets)
+  (declare (buckets buckets)
            (positive-fixnum bucket-id)
            ((or null node) pred-node next))
   (if pred-node
