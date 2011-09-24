@@ -17,5 +17,9 @@
 
 (eval-when (:compile-toplevel :load-toplevel)
   (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
+  (defparameter *interface* '(optimize (speed 3) (safety 2) (debug 1)))
+  (defparameter *normal* '(optimize (speed 1) (safety 3) (debug 2)))
+  (defparameter *muffle-note* #-SBCL '()
+                              #+SBCL '(sb-ext:muffle-conditions sb-ext:compiler-note))
   (defconstant +HASHCODE_BITLEN+ 32)
   (defconstant +MAX_HASHCODE+ (1- (ash 1 32))))

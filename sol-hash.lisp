@@ -1,10 +1,16 @@
 (in-package :sol-hash)
 
-#+C
-(declaim (inline bucket-id ordinary-hash sentinel-hash
-                 bit-reverse parent-id
-                 find-candidate find-node
-                 set-impl make-node))
+(declaim #.*fastest*
+         (inline make ;; for local(stack) allocation
+                 
+                 make-node node-next node-hash node-key node-value
+                 make-map map-buckets map-bitlen map-count
+                 map-upper-border map-lower-border map-hash-fn map-test-fn
+
+                 bit-reverse lower-bits mask-lower-bits
+                 hashcode-and-bucket-id predecessor-id parent-id
+                 find-candidate set-pred-next find-node
+                 set-impl))
 
 ;;;;;;;;;;
 ;;; struct
@@ -24,6 +30,7 @@
   (test-fn   t :type test-fn))
 
 (defmethod print-object ((o map) stream)
+  (declare #.*normal*)
   (print-unreadable-object (o stream :type t :identity t)
     (with-slots (count) (the map o)
       (format stream "~s ~s" :count count))))
@@ -49,34 +56,30 @@
            (hashcode-width width))
   (ldb (byte width 0) n))
 
-(defun upper-bits (width n)
+(defun mask-lower-bits (upper-bits-width n &aux (width upper-bits-width))
   (declare (hashcode n)
            (hashcode-width width))
-  (ldb (byte width (- +HASHCODE_BITLEN+ width)) n))
+  (dpb 0 (byte (- +HASHCODE_BITLEN+ width) 0) n))
 
 (defun hashcode-and-bucket-id (key map)
   (with-slots (hash-fn bitlen) (the map map)
     (let* ((h1 (lower-bits +HASHCODE_BITLEN+ (funcall hash-fn key)))
            (h2 (bit-reverse h1)))
-      (values h2                         ; key's hashcode
-              (lower-bits bitlen h1)     ; bucket-id
-              (upper-bits bitlen h2))))) ; reverse bucket-id
+      (values h2                          ; key's hashcode
+              (mask-lower-bits bitlen h2) ; bucket's hashcode
+              (lower-bits bitlen h1)))))  ; bucket-id
 
-(defun bucket-hashcode (bucket-id)
-  (bit-reverse bucket-id))
-
-(defun predecessor-id (reverse-bucket-id bitlen)
-  (declare (hashcode reverse-bucket-id)
+(defun predecessor-id (bucket-hash bitlen)
+  (declare (hashcode bucket-hash)
            (hashcode-width bitlen))
-  (if (zerop reverse-bucket-id)
+  (if (zerop bucket-hash)
       0
-    (let* ((r-predecessor-id (1- reverse-bucket-id))
-           (bit-offset (- +HASHCODE_BITLEN+ bitlen))
-           (predecessor-id (bit-reverse (ash r-predecessor-id bit-offset))))
-      (values predecessor-id
-              r-predecessor-id))))
+    (let* ((pred-hash (mask-lower-bits bitlen (1- bucket-hash)))
+           (pred-id (bit-reverse pred-hash)))
+      (values pred-id pred-hash))))
 
 (defun parent-id (bucket-id)
+  (declare (hashcode bucket-id))
   (let ((i (1- (integer-length bucket-id))))
     (dpb 0 (byte 1 i) bucket-id)))
 
@@ -96,43 +99,48 @@
       (setf (node-next pred-node) next)
     (setf (aref buckets bucket-id) next)))
 
-(defun get-bucket (bucket-id reverse-id map)
+(defun get-bucket (bucket-id bucket-hash map)
   (with-slots (buckets bitlen) (the map map)
     (if (aref buckets bucket-id)
         (aref buckets bucket-id)
       (when (plusp bucket-id)
-        (multiple-value-bind (pred-bucket-id pred-reverse-id)
-                             (predecessor-id reverse-id bitlen)
-          (let ((pred-bucket (get-bucket pred-bucket-id pred-reverse-id map))
-                (bucket-hash (bucket-hashcode bucket-id)))
-          (multiple-value-bind (pred node)
-                               (find-candidate bucket-hash pred-bucket)
-            (when node
-              (set-pred-next pred buckets pred-bucket-id :next nil)
-              (setf (aref buckets bucket-id) node)))))))))
+        (multiple-value-bind (pred-bucket-id pred-bucket-hash)
+                             (predecessor-id bucket-hash bitlen)
+          (let ((pred-bucket (get-bucket pred-bucket-id pred-bucket-hash map)))
+            (multiple-value-bind (pred node)
+                                 (find-candidate bucket-hash pred-bucket)
+              (when node
+                (set-pred-next pred buckets pred-bucket-id :next nil)
+                (setf (aref buckets bucket-id) node)))))))))
 
 (defun find-node (key map)
   (with-slots (test-fn) (the map map)
-    (multiple-value-bind (hash id rev-id) (hashcode-and-bucket-id key map)
+    (multiple-value-bind (hash bucket-hash bucket-id)
+                         (hashcode-and-bucket-id key map)
+      (declare (hashcode hash))
       (multiple-value-bind (pred cur)
-                           (find-candidate hash (get-bucket id rev-id map))
+                           (find-candidate hash 
+                                           (get-bucket bucket-id bucket-hash map))
         (labels ((recur (pred cur)
                    (if (or (null cur) (/= hash (node-hash cur)))
-                       (values nil cur pred id hash)
+                       (values nil cur pred bucket-id hash)
                      (if (funcall test-fn key (node-key cur))
-                         (values t cur pred id hash)
+                         (values t cur pred bucket-id hash)
                        (recur cur (node-next cur))))))
           (recur pred cur))))))
 
-(defmacro each-bucket ((head-node bucket-id map &key (start 0) end) &body body)
+(defmacro each-bucket ((head-node bucket-id map &key (start 0) end return) 
+                       &body body)
   (let ((buckets (gensym)))
     `(with-slots ((,buckets buckets)) (the map ,map)
-       (loop FOR ,bucket-id fixnum FROM (1- ,(or end `(length ,buckets))) 
-                                   DOWNTO ,start
+       (loop FOR ,bucket-id fixnum FROM ,start 
+                                   BELOW ,(or end `(length ,buckets))
              FOR ,head-node = (aref ,buckets ,bucket-id) 
              WHEN ,head-node
          DO
-         (locally ,@body)))))
+         (locally ,@body)
+         FINALLY
+         (return ,return)))))
 
 (defun upsize (map)
   (with-slots (buckets bitlen lower-border upper-border) (the map map)
@@ -167,10 +175,19 @@
             (values lower-border upper-border) (calc-borders new-size)))))
 
 (defun calc-borders (size)
-  (values (floor (* 0.4 size))
-          (floor (* 0.9 size))))
+  (declare (positive-fixnum size)
+           #.*muffle-note*)
+  (values (floor (* 0.25 size))
+          (floor (* 0.75 size))))
 
+
+;;;;;;;;;;;;;;;;;;;;;
+;;; external function
+(declaim 
+ (ftype (function (&key (:hash hash-fn) (:test test-fn) (:size positive-fixnum)) map)
+        make))
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
+  (declare #.*interface*)
   (let* ((bitlen (ceiling (log (max 2 size) 2)))
          (buckets (make-array (expt 2 bitlen) :initial-element '())))
     (multiple-value-bind (lower upper) (calc-borders (length buckets))
@@ -182,7 +199,9 @@
                 :buckets buckets))))
 
 (defun get (key map &optional default)
+  (declare #.*interface*)
   (multiple-value-bind (exists? node) (find-node key map)
+    (declare #.*fastest*)
     (if exists?
         (values (node-value node) t)
       (values default nil))))
@@ -192,7 +211,7 @@
     (if exists?
         (setf (node-value node) new-value)
       (with-slots (buckets count upper-border) (the map map)
-         (when (> (incf count) upper-border)
+         (when (> (the positive-fixnum (incf count)) upper-border)
            (upsize map))
 
          (set-pred-next pred buckets bucket-id 
@@ -201,37 +220,40 @@
          new-value))))
           
 (defun (setf get) (new-value key map)
-  (set-impl new-value key map))
+  (declare #.*interface*)
+  (locally
+   (declare #.*fastest*)
+   (set-impl new-value key map)))
 
 (defun count (map)
+  (declare #.*interface*)
   (map-count map))
 
 (defun remove (key map)
+  (declare #.*interface*)
   (multiple-value-bind (exists? node pred bucket-id) (find-node key map)
+    (declare #.*fastest*)
     (when exists?
       (with-slots (buckets count lower-border) (the map map)
         (set-pred-next pred buckets bucket-id :next (node-next node))
-        (when (< (decf count) lower-border)
+        (when (< (the positive-fixnum (decf count)) lower-border)
           (downsize map)))
       t)))
 
-#+C
 (defmacro each ((key value map &optional return-form) &body body)
-  (let ((node (gensym)))
-    `(loop FOR ,node = (hashmap-head ,map) THEN (node-next ,node)
-           WHILE ,node
-           WHEN (typep ,node 'node)
-       DO
-       (let ((,key (node-key ,node))
-             (,value (node-value ,node)))
-         ,@body)
-       FINALLY
-       (return ,return-form))))
+  (let ((id (gensym))
+        (node (gensym))
+        (head (gensym)))
+    `(each-bucket (,head ,id ,map :return ,return-form)
+       (loop FOR ,node = ,head THEN (node-next ,node)
+             WHILE ,node
+         DO
+         (let ((,key (node-key ,node))
+               (,value (node-value ,node)))
+           ,@body)))))
 
-#+C
 (defun map (fn map &aux acc)
+  (declare #.*interface*
+           (function fn))
   (each (k v map (nreverse acc))
     (push (funcall fn k v) acc)))
-
-
-;; TODO: hash-fnとtest-fnをinline展開できる方法も用意する
