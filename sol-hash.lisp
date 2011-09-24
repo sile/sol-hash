@@ -137,8 +137,7 @@
   (with-slots (buckets bitlen) (the map map)  
   (let* ((child-id (child-id bucket-id bitlen))
          (child-hash (bit-reverse child-id)))
-    (multiple-value-bind (pred succ)
-                         (find-candidate child-hash head)
+    (multiple-value-bind (pred succ) (find-candidate child-hash head)
       (set-pred-next pred buckets bucket-id :next (sentinel))
       (setf (aref buckets child-id) succ)))))
 
@@ -221,14 +220,14 @@
 (defun set-impl (new-value key map)
   (multiple-value-bind (exists? node pred bucket-id hash) (find-node key map)
     (if exists?
-        (setf (node-value node) new-value)
+          (setf (node-value node) new-value)
       (with-slots (buckets count upper-border) (the map map)
-         (when (> (the positive-fixnum (incf count)) upper-border)
-           (upsize map))
-
          (set-pred-next pred buckets bucket-id 
                         :next (make-node :key key :value new-value
                                          :hash hash :next node))
+
+         (when (> (the positive-fixnum (incf count)) upper-border)
+           (upsize map))
          new-value))))
           
 (defun (setf get) (new-value key map)
