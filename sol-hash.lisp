@@ -7,12 +7,11 @@
                  make-map map-buckets map-bitlen map-count
                  map-upper-border map-lower-border map-hash-fn map-test-fn
                  
-                 get-bucket
                  next sentinel sentinel? ordinal?
                  bit-reverse lower-bits mask-lower-bits
                  hashcode-and-bucket-id predecessor-id parent-id
                  find-candidate set-pred-next find-node
-                 set-impl))
+                 set-impl get-bucket rehash-bucket))
 
 ;;;;;;;;;;
 ;;; struct
