@@ -1,12 +1,13 @@
 (in-package :sol-hash)
 
 (declaim #.*fastest*
-         (inline make ;; for local(stack) allocation
-                 
+         (inline make get (setf get) remove map count
+
                  make-node node-next node-hash node-key node-value
                  make-map map-buckets map-bitlen map-count
                  map-upper-border map-lower-border map-hash-fn map-test-fn
                  
+                 get-bucket
                  next sentinel sentinel? ordinal?
                  bit-reverse lower-bits mask-lower-bits
                  hashcode-and-bucket-id predecessor-id parent-id
@@ -114,6 +115,9 @@
       (setf (aref buckets bucket-id) next)
     (setf (node-next pred-node) next)))
 
+(defun get-bucket-notinline (bucket-id bucket-hash map)
+  (get-bucket bucket-id bucket-hash map))
+
 (defun get-bucket (bucket-id bucket-hash map)
   (with-slots (buckets bitlen) (the map map)
     (if (or (ordinal? (aref buckets bucket-id))
@@ -121,7 +125,8 @@
         (aref buckets bucket-id)
       (multiple-value-bind (pred-bucket-id pred-bucket-hash)
                            (predecessor-id bucket-hash bitlen)
-        (let ((pred-bucket (get-bucket pred-bucket-id pred-bucket-hash map)))
+        (let ((pred-bucket (get-bucket-notinline
+                            pred-bucket-id pred-bucket-hash map)))
           (multiple-value-bind (pred node)
                                (find-candidate bucket-hash pred-bucket)
             (set-pred-next pred buckets pred-bucket-id :next (sentinel))
@@ -136,7 +141,8 @@
                            (find-candidate hash 
                                            (get-bucket bucket-id bucket-hash map))
         (labels ((recur (pred cur)
-                   (if (/= hash (node-hash cur))
+                   (if (or (/= hash (node-hash cur))
+                           (sentinel? cur))
                        (values nil cur pred bucket-id hash)
                      (if (funcall test-fn key (node-key cur))
                          (values t cur pred bucket-id hash)
