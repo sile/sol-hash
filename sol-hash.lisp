@@ -41,25 +41,36 @@
           (ash n -24)))
 
 (defun lower-bits (width n)
-  (declare (positive-fixnum n)
+  (declare (hashcode n)
            (hashcode-width width))
   (ldb (byte width 0) n))
 
+(defun upper-bits (width n)
+  (declare (hashcode n)
+           (hashcode-width width))
+  (ldb (byte width (- +HASHCODE_BITLEN+ width)) n))
+
 (defun hashcode-and-bucket-id (key map)
   (with-slots (hash-fn bitlen) (the map map)
-    (let ((h (lower-bits +HASHCODE_BITLEN+ (funcall hash-fn key))))
-      (values (bit-reverse h)           ; hashcode
-              (lower-bits bitlen h))))) ; bucket-id
+    (let* ((h1 (lower-bits +HASHCODE_BITLEN+ (funcall hash-fn key)))
+           (h2 (bit-reverse h1)))
+      (values h2                         ; key's hashcode
+              (lower-bits bitlen h1)     ; bucket-id
+              (upper-bits bitlen h2))))) ; reverse bucket-id
 
 (defun bucket-hashcode (bucket-id)
   (bit-reverse bucket-id))
 
-(defun predecessor-id (bucket-id bitlen)
-  (declare (positive-fixnum bucket-id))
-  (if (zerop bucket-id)
+(defun predecessor-id (reverse-bucket-id bitlen)
+  (declare (hashcode reverse-bucket-id)
+           (hashcode-width bitlen))
+  (if (zerop reverse-bucket-id)
       0
-    (let ((predecessor-id (bit-reverse (1- (bit-reverse bucket-id)))))
-      (lower-bits bitlen predecessor-id))))
+    (let* ((r-predecessor-id (1- reverse-bucket-id))
+           (bit-offset (- +HASHCODE_BITLEN+ bitlen))
+           (predecessor-id (bit-reverse (ash r-predecessor-id bit-offset))))
+      (values predecessor-id
+              r-predecessor-id))))
 
 (defun parent-id (bucket-id)
   (let ((i (1- (integer-length bucket-id))))
@@ -81,25 +92,26 @@
       (setf (node-next pred-node) next)
     (setf (aref buckets bucket-id) next)))
 
-(defun get-bucket (bucket-id map)
+(defun get-bucket (bucket-id reverse-id map)
   (with-slots (buckets bitlen) (the map map)
     (if (aref buckets bucket-id)
         (aref buckets bucket-id)
       (when (plusp bucket-id)
-        (let* ((pred-bucket-id (predecessor-id bucket-id bitlen))
-               (pred-bucket (get-bucket pred-bucket-id map))
-               (bucket-hash (bucket-hashcode bucket-id)))
+        (multiple-value-bind (pred-bucket-id pred-reverse-id)
+                             (predecessor-id reverse-id bitlen)
+          (let ((pred-bucket (get-bucket pred-bucket-id pred-reverse-id map))
+                (bucket-hash (bucket-hashcode bucket-id)))
           (multiple-value-bind (pred node)
                                (find-candidate bucket-hash pred-bucket)
             (when node
               (set-pred-next pred buckets pred-bucket-id :next nil)
-              (setf (aref buckets bucket-id) node))))))))
+              (setf (aref buckets bucket-id) node)))))))))
 
 (defun find-node (key map)
   (with-slots (test-fn) (the map map)
-    (multiple-value-bind (hash id) (hashcode-and-bucket-id key map)
+    (multiple-value-bind (hash id rev-id) (hashcode-and-bucket-id key map)
       (multiple-value-bind (pred cur)
-                           (find-candidate hash (get-bucket id map))
+                           (find-candidate hash (get-bucket id rev-id map))
         (labels ((recur (pred cur)
                    (if (or (null cur) (/= hash (node-hash cur)))
                        (values nil cur pred id hash)
@@ -217,3 +229,5 @@
   (each (k v map (nreverse acc))
     (push (funcall fn k v) acc)))
 
+
+;; TODO: hash-fnとtest-fnをinline展開できる方法も用意する
