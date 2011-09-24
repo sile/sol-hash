@@ -8,10 +8,10 @@
                  map-upper-border map-lower-border map-hash-fn map-test-fn
                  
                  next sentinel sentinel? ordinal?
-                 bit-reverse lower-bits mask-lower-bits
-                 hashcode-and-bucket-id predecessor-id parent-id
-                 find-candidate set-pred-next find-node
-                 set-impl get-bucket rehash-bucket))
+                 bit-reverse lower-bits bucket-hash
+                 hashcode-and-bucket-id set-pred-next
+                 find-candidate find-node
+                 set-impl))
 
 ;;;;;;;;;;
 ;;; struct
@@ -25,7 +25,7 @@
 (defstruct map
   (buckets    #() :type buckets)
   (bucket-size  0 :type positive-fixnum)
-  (bitlen       0 :type positive-fixnum)
+  (bitlen       0 :type hashcode-width)
   (count        0 :type positive-fixnum)
   (upper-border 0 :type positive-fixnum) 
   (lower-border 0 :type positive-fixnum) 
@@ -40,7 +40,8 @@
 
 (eval-when (:compile-toplevel :load-toplevel)
   (unless (constantp '+SENTINEL+)
-    (defconstant +SENTINEL+ (make-node :hash +MAX_HASHCODE+))))
+    (defconstant +SENTINEL+ (make-node :hash +MAX_HASHCODE+))
+    (setf (node-next +SENTINEL+) +SENTINEL+)))
 
 (defun sentinel () +SENTINEL+) 
 (defun sentinel? (node) (eq node (sentinel)))
@@ -70,6 +71,9 @@
   (declare (hashcode n)
            (hashcode-width width))
   (ldb (byte width 0) n))
+
+(defun bucket-hash (bucket-id)
+  (bit-reverse bucket-id))
 
 (defun hashcode-and-bucket-id (key map)
   (with-slots (hash-fn bitlen) (the map map)
@@ -123,59 +127,45 @@
          FINALLY
          (return ,return)))))
 
-(defun parent-id (bucket-id bitlen)
-  (declare (hashcode bucket-id)
-           (hashcode-width bitlen))
-  (dpb 0 (byte 1 (1- bitlen)) bucket-id))
-
-(defun child-id (bucket-id bitlen)
-  (declare (hashcode bucket-id)
-           (hashcode-width bitlen))
-  (dpb 1 (byte 1 (1- bitlen)) bucket-id))
-
-(defun rehash-bucket2 (head bucket-id map)
-  (with-slots (buckets bitlen) (the map map)  
-  (let* ((child-id (child-id bucket-id bitlen))
-         (child-hash (bit-reverse child-id)))
-    (multiple-value-bind (pred succ) (find-candidate child-hash head)
-      (set-pred-next pred buckets bucket-id :next (sentinel))
-      (setf (aref buckets child-id) succ)))))
-
 (defun upsize (map)
   (with-slots (buckets bucket-size bitlen) (the map map)
-    (incf bitlen)
-    (let ((old-size bucket-size)
-          (new-size (the positive-fixnum (* 2 bucket-size))))
-      (update-size-and-borders map new-size)
-      (setf buckets (adjust-array buckets new-size :element-type 'bucket
-                                                   :initial-element (sentinel)))
+    (labels ((child (bucket)
+               (dpb 1 (byte 1 bitlen) bucket))
 
-      (each-bucket (head bucket-id map :end old-size)
-        (rehash-bucket2 head bucket-id map)))))
+             (rehash-bucket (head parent &aux (child (child parent)))
+               (multiple-value-bind (pred succ) 
+                                    (find-candidate (bucket-hash child) head)
+                 (set-pred-next pred buckets parent :next (sentinel))
+                 (setf (aref buckets child) succ))))
+      (declare (inline child rehash-bucket))
 
-(defun rehash-bucket (head bucket-id map)
-  (with-slots (buckets bitlen) (the map map)  
-    (let ((tail (loop FOR node = head THEN next
-                      FOR next = (next node)
-                      UNTIL (sentinel? next)
-                      FINALLY (return node)))
-          (parent-id (parent-id bucket-id bitlen)))
-      (multiple-value-bind (pred succ)
-                           (find-candidate (node-hash head) 
-                                           (aref buckets parent-id))
-        (set-pred-next pred buckets parent-id :next head)
-        (setf (node-next tail) succ)))))
+      (let ((old-size bucket-size)
+            (new-size (the positive-fixnum (* 2 bucket-size))))
+        (update-size-and-borders map new-size)
+        (each-bucket (head bucket-id map :end old-size)
+          (rehash-bucket head bucket-id))
+        (incf bitlen)))))
 
 (defun downsize (map)
   (with-slots (buckets bucket-size bitlen) (the map map)
-    (decf bitlen)
+    (labels ((parent (bucket)
+               (dpb 0 (byte 1 bitlen) bucket))
 
-    (let ((old-size bucket-size)
-          (new-size (floor bucket-size 2)))
-      (each-bucket (head bucket-id map :start new-size :end old-size)
-        (rehash-bucket head bucket-id map))
-
-      (update-size-and-borders map new-size))))
+             (rehash-bucket (head child &aux (parent (parent child)))
+               (let ((parent-tail
+                      (loop FOR node = (aref buckets parent) THEN (next node)
+                            UNTIL (sentinel? (next node))
+                            FINALLY (return node))))
+                 (set-pred-next parent-tail buckets parent :next head)
+                 (setf (aref buckets child) (sentinel)))))
+      (declare (inline parent rehash-bucket))
+      
+      (let ((old-size bucket-size)
+            (new-size (floor bucket-size 2)))
+        (decf bitlen)
+        (each-bucket (head bucket-id map :start new-size :end old-size)
+          (rehash-bucket head bucket-id))
+        (update-size-and-borders map new-size)))))
 
 (defun calc-borders (size)
   (declare (positive-fixnum size)
@@ -184,16 +174,20 @@
           (ceiling (* 0.75 size))))
 
 (defun update-size-and-borders (map new-size)
-    (with-slots (bucket-size lower-border upper-border) (the map map)
-      (setf (values lower-border upper-border) (calc-borders new-size)
-            bucket-size new-size)))
+  (declare (positive-fixnum new-size))
+  (with-slots (buckets bucket-size lower-border upper-border) (the map map)
+    (when (< bucket-size new-size)
+      (setf buckets (adjust-array buckets new-size :element-type 'bucket
+                                                   :initial-element (sentinel))))
+    (setf (values lower-border upper-border) (calc-borders new-size)
+          bucket-size new-size)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; external function
-(declaim 
- (ftype (function (&key (:hash hash-fn) (:test test-fn) (:size positive-fixnum)) map)
-        make))
+(declaim (ftype
+          (function (&key (:hash hash-fn) (:test test-fn) (:size positive-fixnum)) map) 
+          make))
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
   (declare #.*interface*)
   (let* ((bitlen (ceiling (log (max 2 size) 2)))
@@ -225,8 +219,8 @@
          (set-pred-next pred buckets bucket-id 
                         :next (make-node :key key :value new-value
                                          :hash hash :next node))
-
-         (when (> (the positive-fixnum (incf count)) upper-border)
+         (incf count)
+         (when (> count upper-border)
            (upsize map))
          new-value))))
           
@@ -247,7 +241,8 @@
     (when exists?
       (with-slots (buckets count lower-border) (the map map)
         (set-pred-next pred buckets bucket-id :next (next node))
-        (when (< (the positive-fixnum (decf count)) lower-border)
+        (decf count)
+        (when (< count lower-border)
           (downsize map)))
       t)))
 
