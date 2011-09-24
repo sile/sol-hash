@@ -71,32 +71,12 @@
            (hashcode-width width))
   (ldb (byte width 0) n))
 
-(defun mask-lower-bits (upper-bits-width n &aux (width upper-bits-width))
-  (declare (hashcode n)
-           (hashcode-width width))
-  (dpb 0 (byte (- +HASHCODE_BITLEN+ width) 0) n))
-
 (defun hashcode-and-bucket-id (key map)
   (with-slots (hash-fn bitlen) (the map map)
     (let* ((h1 (lower-bits +HASHCODE_BITLEN+ (funcall hash-fn key)))
            (h2 (bit-reverse h1)))
       (values h2                          ; key's hashcode
-              (mask-lower-bits bitlen h2) ; bucket's hashcode
               (lower-bits bitlen h1)))))  ; bucket-id
-
-(defun predecessor-id (bucket-hash bitlen)
-  (declare (hashcode bucket-hash)
-           (hashcode-width bitlen))
-  (if (zerop bucket-hash)
-      0
-    (let* ((pred-hash (mask-lower-bits bitlen (1- bucket-hash)))
-           (pred-id (bit-reverse pred-hash)))
-      (values pred-id pred-hash))))
-
-(defun parent-id (bucket-id)
-  (declare (hashcode bucket-id))
-  (let ((i (1- (integer-length bucket-id))))
-    (dpb 0 (byte 1 i) bucket-id)))
 
 (defun find-candidate (hash head)
   (declare (hashcode hash))
@@ -114,31 +94,13 @@
       (setf (aref buckets bucket-id) next)
     (setf (node-next pred-node) next)))
 
-(defun get-bucket-notinline (bucket-id bucket-hash map)
-  (get-bucket bucket-id bucket-hash map))
-
-(defun get-bucket (bucket-id bucket-hash map)
-  (with-slots (buckets bitlen) (the map map)
-    (if (or (ordinal? (aref buckets bucket-id))
-            (zerop bucket-id))
-        (aref buckets bucket-id)
-      (multiple-value-bind (pred-bucket-id pred-bucket-hash)
-                           (predecessor-id bucket-hash bitlen)
-        (let ((pred-bucket (get-bucket-notinline
-                            pred-bucket-id pred-bucket-hash map)))
-          (multiple-value-bind (pred node)
-                               (find-candidate bucket-hash pred-bucket)
-            (set-pred-next pred buckets pred-bucket-id :next (sentinel))
-            (setf (aref buckets bucket-id) node)))))))
-
 (defun find-node (key map)
-  (with-slots (test-fn) (the map map)
-    (multiple-value-bind (hash bucket-hash bucket-id)
+  (with-slots (test-fn buckets) (the map map)
+    (multiple-value-bind (hash bucket-id)
                          (hashcode-and-bucket-id key map)
       (declare (hashcode hash))
       (multiple-value-bind (pred cur)
-                           (find-candidate hash 
-                                           (get-bucket bucket-id bucket-hash map))
+                           (find-candidate hash (aref buckets bucket-id))
         (labels ((recur (pred cur)
                    (if (or (/= hash (node-hash cur))
                            (sentinel? cur))
@@ -161,22 +123,44 @@
          FINALLY
          (return ,return)))))
 
+(defun parent-id (bucket-id bitlen)
+  (declare (hashcode bucket-id)
+           (hashcode-width bitlen))
+  (dpb 0 (byte 1 (1- bitlen)) bucket-id))
+
+(defun child-id (bucket-id bitlen)
+  (declare (hashcode bucket-id)
+           (hashcode-width bitlen))
+  (dpb 1 (byte 1 (1- bitlen)) bucket-id))
+
+(defun rehash-bucket2 (head bucket-id map)
+  (with-slots (buckets bitlen) (the map map)  
+  (let* ((child-id (child-id bucket-id bitlen))
+         (child-hash (bit-reverse child-id)))
+    (multiple-value-bind (pred succ)
+                         (find-candidate child-hash head)
+      (set-pred-next pred buckets bucket-id :next (sentinel))
+      (setf (aref buckets child-id) succ)))))
+
 (defun upsize (map)
   (with-slots (buckets bucket-size bitlen) (the map map)
     (incf bitlen)
-    (let ((new-size (the positive-fixnum (* 2 bucket-size))))
+    (let ((old-size bucket-size)
+          (new-size (the positive-fixnum (* 2 bucket-size))))
       (update-size-and-borders map new-size)
       (setf buckets (adjust-array buckets new-size :element-type 'bucket
-                                                   :initial-element (sentinel))))))
+                                                   :initial-element (sentinel)))
+
+      (each-bucket (head bucket-id map :end old-size)
+        (rehash-bucket2 head bucket-id map)))))
 
 (defun rehash-bucket (head bucket-id map)
-  (let ((tail (loop FOR node = head THEN next
-                    FOR next = (next node)
-                    UNTIL (sentinel? next)
-                    FINALLY (return node)))
-        (parent-id (parent-id bucket-id)))
-
-    (with-slots (buckets) (the map map)  
+  (with-slots (buckets bitlen) (the map map)  
+    (let ((tail (loop FOR node = head THEN next
+                      FOR next = (next node)
+                      UNTIL (sentinel? next)
+                      FINALLY (return node)))
+          (parent-id (parent-id bucket-id bitlen)))
       (multiple-value-bind (pred succ)
                            (find-candidate (node-hash head) 
                                            (aref buckets parent-id))
