@@ -10,7 +10,7 @@
 (in-package :sol-hash)
 
 (deftype positive-fixnum () '(unsigned-byte #.(integer-length most-positive-fixnum)))
-(deftype hashcode-width () '(mod 32))
+(deftype hashcode-width () '(mod 33))
 (deftype hashcode () '(unsigned-byte 32))
 (deftype hash-fn () '(function (t) hashcode))
 (deftype test-fn () '(function (t t) boolean))

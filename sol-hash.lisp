@@ -18,11 +18,12 @@
   (buckets #() :type (simple-array (or null node)))
   (bitlen    0 :type positive-fixnum)
   (count     0 :type positive-fixnum)
-  (resize-upper-border 0 :type positive-fixnum) 
-  (resize-lower-border 0 :type positive-fixnum) 
+  (upper-border 0 :type positive-fixnum) 
+  (lower-border 0 :type positive-fixnum) 
   (hash-fn   t :type hash-fn)
   (test-fn   t :type test-fn))
 
+;; TODO: print-object
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; internal function
@@ -69,8 +70,9 @@
     (recur nil head)))
 
 (defun set-pred-next (pred-node buckets bucket-id &key next)
-  (declare ((simple-array (or null node)) bucket-id)
-           (positive-fixnum bucket-id))
+  (declare ((simple-array (or null node)) buckets)
+           (positive-fixnum bucket-id)
+           ((or null node) pred-node next))
   (if pred-node
       (setf (node-next pred-node) next)
     (setf (aref buckets bucket-id) next)))
@@ -102,51 +104,58 @@
                        (recur cur (node-next cur))))))
           (recur pred cur))))))
 
-(defun resize-upper (map)
-  (with-slots (buckets bitlen resize-lower-border resize-upper-border) (the map map)
+(defmacro each-bucket ((head-node map &key (start 0) end) &body body)
+  (let ((i (gensym))
+        (buckets (gensym)))
+    `(with-slots ((,buckets buckets)) (the map ,map)
+       (loop FOR ,i fixnum FROM ,start BELOW ,(or end `(length ,buckets))
+             FOR ,head-node = (aref ,buckets ,i) 
+             WHEN ,head-node
+         DO
+         (locally ,@body)))))
+
+(defun upsize (map)
+  (with-slots (buckets bitlen lower-border upper-border) (the map map)
     (incf bitlen)
-    (setf buckets (adjust-array buckets (* 2 (length buckets)) :initial-element '()))
-    (multiple-value-bind (upper lower) (calc-borders (length buckets))
-      (setf resize-lower-border lower
-            resize-upper-border upper))))
+    (let ((new-size (* 2 (length buckets))))
+      (setf buckets (adjust-array buckets new-size :initial-element '())
+            (values lower-border upper-border) (calc-borders new-size)))))
 
 ;; TODO: 効率化
-(defun rehash-node (nn map)
-  (when (node-next nn)
-    (rehash-node (node-next nn) map))
+(defun rehash-bucket (node map)
+  (when (node-next node)
+    (rehash-bucket (node-next node) map))
 
-  (multiple-value-bind (_ node pred hash id) (find-node (node-key nn) map)
-    (declare (ignore _ hash))
-    (with-slots (buckets) (the hmap map)
-      (let ((new-node nn))
-        (setf (node-next new-node) node)
-        (set-pred-next pred buckets id :next new-node))))
+  (multiple-value-bind (_ succ pred bucket-id) (find-node (node-key node) map)
+    (declare (ignore _))
+    (with-slots (buckets) (the map map)
+        (set-pred-next pred buckets bucket-id :next node)
+        (setf (node-next node) succ))))
 
-(defun resize-lower (map)
-  (with-slots (buckets bitlen) (the map map)
+(defun downsize (map)
+  (with-slots (buckets bitlen lower-border upper-border) (the map map)
     (decf bitlen)
-    ;; TODO: map-impl
-    (loop FOR i fixnum FROM (expt 2 bitlen) BELOW (expt 2 (1+ bitlen))
-          FOR head = (aref buckets i) 
-          WHEN head
-      DO
-      (rehash-node head map))
-    (setf buckets (adjust-array buckets (expt 2 bitlen)
-                                :initial-element '()))))
+
+    (let ((new-size (floor (length buckets) 2)))
+      (each-bucket (head map :start new-size)
+        (rehash-bucket head map))
+
+      (setf buckets (adjust-array buckets new-size)
+            (values lower-border upper-border) (calc-borders new-size)))))
 
 (defun calc-borders (size)
-  (values (floor (* 0.9 size))
-          (floor (* 0.25 size))))
+  (values (floor (* 0.4 size))
+          (floor (* 0.9 size))))
 
 (defun make (&key (size 4) (hash #'sxhash) (test #'eql))
-  (let* ((bitlen (ceiling (log size 2)))
+  (let* ((bitlen (ceiling (log (max 2 size) 2)))
          (buckets (make-array (expt 2 bitlen) :initial-element '())))
-    (multiple-value-bind (upper lower) (calc-borders (length buckets))
+    (multiple-value-bind (lower upper) (calc-borders (length buckets))
       (make-map :hash-fn hash
                 :test-fn test
                 :bitlen bitlen
-                :resize-upper-border upper
-                :resize-lower-border lower
+                :upper-border upper
+                :lower-border lower
                 :buckets buckets))))
 
 (defun get (key map &optional default)
@@ -159,9 +168,9 @@
   (multiple-value-bind (exists? node pred bucket-id hash) (find-node key map)
     (if exists?
         (setf (node-value node) new-value)
-      (with-slots (buckets count resize-upper-border) (the map map)
-         (when (> (incf count) resize-upper-border)
-           (resize-upper map))
+      (with-slots (buckets count upper-border) (the map map)
+         (when (> (incf count) upper-border)
+           (upsize map))
 
          (set-pred-next pred buckets bucket-id 
                         :next (make-node :key key :value new-value
@@ -177,10 +186,10 @@
 (defun remove (key map)
   (multiple-value-bind (exists? node pred bucket-id) (find-node key map)
     (when exists?
-      (with-slots (buckets count resize-lower-border) (the map map)
+      (with-slots (buckets count lower-border) (the map map)
         (set-pred-next pred buckets bucket-id :next (node-next node))
-        (when (< (decf count) resize-lower-border)
-          (resize-lower map)))
+        (when (< (decf count) lower-border)
+          (downsize map)))
       t)))
 
 #+C
