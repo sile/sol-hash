@@ -1,18 +1,16 @@
 (defpackage sol-hash
   (:use :common-lisp)
   (:shadow :common-lisp get remove map count)
-  (:export hashmap
-           make
+  (:export make
            get
            remove
            count
            map
-           each
-
-           hash))
+           each))
 (in-package :sol-hash)
 
 (deftype positive-fixnum () '(unsigned-byte #.(integer-length most-positive-fixnum)))
+(deftype hashcode-width () '(mod 32))
 (deftype hashcode () '(unsigned-byte 32))
 (deftype hash-fn () '(function (t) hashcode))
 (deftype test-fn () '(function (t t) boolean))
