@@ -2,7 +2,7 @@
 
 (defsystem sol-hash
   :name "sol-hash"
-  :version "0.0.5"
+  :version "0.0.6"
   :author "Takeru Ohta"
   :description "A hash table implementation using Split-Ordered-Lists"
   
