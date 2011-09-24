@@ -61,6 +61,10 @@
     (let ((predecessor-id (bit-reverse (1- (bit-reverse bucket-id)))))
       (lower-bits bitlen predecessor-id))))
 
+(defun parent-id (bucket-id)
+  (let ((i (1- (integer-length bucket-id))))
+    (dpb 0 (byte 1 i) bucket-id)))
+
 (defun find-candidate (hash head)
   (declare (hashcode hash))
   (labels ((recur (pred cur)
@@ -104,12 +108,12 @@
                        (recur cur (node-next cur))))))
           (recur pred cur))))))
 
-(defmacro each-bucket ((head-node map &key (start 0) end) &body body)
-  (let ((i (gensym))
-        (buckets (gensym)))
+(defmacro each-bucket ((head-node bucket-id map &key (start 0) end) &body body)
+  (let ((buckets (gensym)))
     `(with-slots ((,buckets buckets)) (the map ,map)
-       (loop FOR ,i fixnum FROM ,start BELOW ,(or end `(length ,buckets))
-             FOR ,head-node = (aref ,buckets ,i) 
+       (loop FOR ,bucket-id fixnum FROM (1- ,(or end `(length ,buckets))) 
+                                   DOWNTO ,start
+             FOR ,head-node = (aref ,buckets ,bucket-id) 
              WHEN ,head-node
          DO
          (locally ,@body)))))
@@ -121,24 +125,27 @@
       (setf buckets (adjust-array buckets new-size :initial-element '())
             (values lower-border upper-border) (calc-borders new-size)))))
 
-;; TODO: 効率化
-(defun rehash-bucket (node map)
-  (when (node-next node)
-    (rehash-bucket (node-next node) map))
+(defun rehash-bucket (head bucket-id map)
+  (let ((tail (loop FOR node = head THEN next
+                    FOR next = (node-next node)
+                    WHILE next
+                    FINALLY (return node)))
+        (parent-id (parent-id bucket-id)))
 
-  (multiple-value-bind (_ succ pred bucket-id) (find-node (node-key node) map)
-    (declare (ignore _))
-    (with-slots (buckets) (the map map)
-        (set-pred-next pred buckets bucket-id :next node)
-        (setf (node-next node) succ))))
+    (with-slots (buckets) (the map map)  
+      (multiple-value-bind (pred succ)
+                           (find-candidate (node-hash head) 
+                                           (aref buckets parent-id))
+        (set-pred-next pred buckets parent-id :next head)
+        (setf (node-next tail) succ)))))
 
 (defun downsize (map)
   (with-slots (buckets bitlen lower-border upper-border) (the map map)
     (decf bitlen)
 
     (let ((new-size (floor (length buckets) 2)))
-      (each-bucket (head map :start new-size)
-        (rehash-bucket head map))
+      (each-bucket (head bucket-id map :start new-size)
+        (rehash-bucket head bucket-id map))
 
       (setf buckets (adjust-array buckets new-size)
             (values lower-border upper-border) (calc-borders new-size)))))
