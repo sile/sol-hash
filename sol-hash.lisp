@@ -1,45 +1,42 @@
 (in-package :sol-hash)
 
 (declaim #.*fastest*
-         (inline make count clear map get (setf get) remove
+         (inline make count clear map get (setf get) remove test-name
 
                  make-node node-next node-hash node-key node-value
-                 make-map map-buckets map-bitlen map-count
-                 map-resize-border map-hash-fn map-test-fn
+                 
+                 make-map map-buckets map-bucket-size map-bitlen 
+                 map-count map-resize-border map-functor
+
+                 make-functor functor-set functor-get functor-rem
                  
                  next sentinel sentinel? ordinal?
-                 bit-reverse lower-bits
-                 hashcode-and-bucket-id set-pred-next
-                 find-candidate
-                 ))
+                 bit-reverse lower-bits hashcode-and-bucket-id 
+                 set-pred-next find-candidate))
 
 ;;;;;;;;;;
 ;;; struct
-(eval-when (:compile-toplevel :load-toplevel)
+(eval-when (:compile-toplevel :load-toplevel :execute)
   (defstruct node
     (next nil :type (or null node))
     (hash   0 :type hashcode)
     (key    t :type t)
     (value  t :type t)))
 
-(deftype set-fn () '(function (t t map) t))
-(deftype get-fn () '(function (t map t) (values t boolean)))
-(deftype rem-fn () '(function (t map) boolean))
+(defstruct functor 
+  (name t :type symbol)
+  (set t  :type set-fn)
+  (get t  :type get-fn)
+  (rem t  :type rem-fn))
 
 (defstruct map
-  (custom     nil :type t)
   (buckets    #() :type buckets)
   (bucket-size  0 :type positive-fixnum)
   (bitlen       0 :type hashcode-width)
   (count        0 :type positive-fixnum)
   (resize-border    0 :type positive-fixnum)
   (resize-threshold 0 :type number)
-  (hash-fn      t :type hash-fn)
-  (test-fn      t :type test-fn)
-
-  (set-fn t :type set-fn)
-  (get-fn t :type get-fn)
-  (rem-fn t :type rem-fn))
+  (functor      t :type functor))
 
 (defmethod print-object ((o map) stream)
   (declare #.*normal*)
@@ -47,7 +44,10 @@
     (with-slots (count) (the map o)
       (format stream "~s ~s" :count count))))
 
-(eval-when (:compile-toplevel :load-toplevel)
+
+;;;;;;;;;;;;;;;;;
+;;; sentinel node
+(eval-when (:compile-toplevel :load-toplevel :execute)
   (unless (constantp '+SENTINEL+)
     (defconstant +SENTINEL+ (make-node :hash +MAX_HASHCODE+))
     (setf (node-next +SENTINEL+) +SENTINEL+)))
@@ -55,10 +55,23 @@
 (defun sentinel () +SENTINEL+) 
 (defun sentinel? (node) (eq node (sentinel)))
 (defun ordinal? (node) (not (sentinel? node)))
-                
 
-;;;;;;;;;;;;;;;;;;;;;
-;;; internal function
+
+;;;;;;;;;;;
+;;; utility
+(defmacro make-gensyms (num)
+  (declare #.*normal*)
+  `(values ,@(loop REPEAT num COLLECT '(gensym))))
+
+(defmacro gensym-let ((&rest symbols) &body body)
+  (declare #.*normal*)
+  (let ((n (length symbols)))
+    `(multiple-value-bind ,symbols (make-gensyms ,n)
+       ,@body)))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; map internal function
 (defun next (node)
   (declare (node node))
   (the node (node-next node)))
@@ -105,31 +118,24 @@
       (setf (aref buckets bucket-id) next)
     (setf (node-next pred-node) next)))
 
-(defmacro find-node (key map &key test hash )
-  (let ((hashcode (gensym))
-        (bucket-id (gensym))
-        (pred (gensym))
-        (cur (gensym))
-        (recur (gensym))
-        (test (or test `(lambda (x y) (funcall (map-test-fn ,map) x y))))
-        (hash (or hash `(lambda (x) (funcall (map-hash-fn ,map) x)))))
-  `(multiple-value-bind (,hashcode ,bucket-id)
-                        (hashcode-and-bucket-id (,hash ,key) (map-bitlen ,map))
-     (declare (hashcode ,hashcode))
-     (multiple-value-bind (,pred ,cur)
-                          (find-candidate ,hashcode (aref (map-buckets ,map) ,bucket-id))
-       (labels ((,recur (,pred ,cur)
-                  (if (or (/= ,hashcode (node-hash ,cur))
-                          (sentinel? ,cur))
-                      (values nil ,cur ,pred ,bucket-id ,hashcode)
-                    (if (,test ,key (node-key ,cur))
-                        (values t ,cur ,pred ,bucket-id ,hashcode)
-                      (,recur ,cur (next ,cur))))))
-         (,recur ,pred ,cur))))))
+(defmacro find-node (key map &key test hash)
+  (gensym-let (hashcode bucket-id pred cur recur)
+    `(multiple-value-bind (,hashcode ,bucket-id)
+                          (hashcode-and-bucket-id (,hash ,key) (map-bitlen ,map))
+       (declare (hashcode ,hashcode))
+       (multiple-value-bind (,pred ,cur)
+                            (find-candidate ,hashcode (aref (map-buckets ,map) ,bucket-id))
+         (labels ((,recur (,pred ,cur)
+                    (if (or (/= ,hashcode (node-hash ,cur))
+                            (sentinel? ,cur))
+                        (values nil ,cur ,pred ,bucket-id ,hashcode)
+                      (if (,test ,key (node-key ,cur))
+                          (values t ,cur ,pred ,bucket-id ,hashcode)
+                        (,recur ,cur (next ,cur))))))
+           (,recur ,pred ,cur))))))
 
 (defmacro each-bucket ((head-node bucket-id map &key start end return) &body body)
-  (let ((buckets (gensym))
-        (bucket-size (gensym)))
+  (gensym-let (buckets bucket-size)
     `(with-slots ((,buckets buckets) (,bucket-size bucket-size)) (the map ,map)
        (loop FOR ,bucket-id fixnum FROM ,(or start 0) BELOW ,(or end bucket-size)
              FOR ,head-node = (aref ,buckets ,bucket-id) 
@@ -173,69 +179,8 @@
     (setf resize-border (calc-border new-size resize-threshold)
           bucket-size new-size)))
 
-
-;;;;;;;;;;;;;;;;;;;;;
-;;; external function
-(defstruct cus
-  (set-fn t :type set-fn)
-  (get-fn t :type get-fn)
-  (rem-fn t :type rem-fn))
-
-(defparameter *customs* '())
-(defmacro defcustom (name hash test)
-  `(push (cons ,name
-               (make-cus :set-fn (gen-set-fn ,hash ,test)
-                         :get-fn (gen-get-fn ,hash ,test)
-                         :rem-fn (gen-rem-fn ,hash ,test)))
-         *customs*))
-
-(defun get-custom (name)
-  (declare (symbol name))
-  (cdr (assoc name *customs*)))
-         
-(defun make (&key (size 4) (hash #'sxhash) (test #'eql) (rehash-threshold 0.75)
-                  custom)
-  (declare #.*interface*
-           (hash-fn hash)
-           (test-fn test)
-           (positive-fixnum size)
-           (number rehash-threshold)
-           (symbol custom))
-  (locally 
-   (declare #.*fastest*)
-   (let* ((bitlen (ceiling (log (max 2 size) 2)))
-          (bucket-size (expt 2 bitlen))
-          (buckets (make-array bucket-size :element-type 'bucket 
-                                           :initial-element (sentinel))))
-     (make-map :hash-fn hash
-               :test-fn test
-               :bitlen bitlen
-               :resize-border (calc-border bucket-size rehash-threshold)
-               :resize-threshold rehash-threshold
-               :buckets buckets
-               :bucket-size bucket-size
-               :custom (when custom
-                         (get-custom custom))
-               
-               :set-fn (if (get-custom custom)
-                           (cus-set-fn (get-custom custom))
-                         (gen-set-fn))
-               
-               :get-fn (if (get-custom custom)
-                           (cus-get-fn (get-custom custom))
-                         (gen-get-fn))
-
-               :rem-fn (if (get-custom custom)
-                           (cus-rem-fn (get-custom custom))
-                         (gen-rem-fn))
-               ))))
-
 (defmacro gen-get-fn (&optional hash test)
-  (let ((exists? (gensym))
-        (node (gensym))
-        (key (gensym))
-        (map (gensym))
-        (default (gensym)))
+  (gensym-let (exists? node key map default)
     `(lambda (,key ,map ,default)
        (declare #.*fastest*)
        (multiple-value-bind (,exists? ,node) (find-node ,key ,map :test ,test :hash ,hash)
@@ -244,14 +189,7 @@
            (values ,default nil))))))
 
 (defmacro gen-set-fn (&optional hash test)
-  (let ((exists? (gensym))
-        (node (gensym))
-        (pred (gensym))
-        (bucket-id (gensym))
-        (hashcode (gensym))
-        (new-value (gensym))
-        (key (gensym))
-        (map (gensym)))
+  (gensym-let (exists? node pred bucket-id hashcode new-value key map)
     `(lambda (,new-value ,key ,map)
        (declare #.*fastest*)
        (multiple-value-bind (,exists? ,node ,pred ,bucket-id ,hashcode) 
@@ -269,12 +207,7 @@
              ,new-value))))))
 
 (defmacro gen-rem-fn (&optional hash test)
-  (let ((exists? (gensym))
-        (node (gensym))
-        (pred (gensym))
-        (bucket-id (gensym))
-        (key (gensym))
-        (map (gensym)))
+  (gensym-let (exists? node pred bucket-id key map)
     `(lambda (,key ,map)
        (declare #.*fastest*)
        (multiple-value-bind (,exists? ,node ,pred ,bucket-id) 
@@ -284,26 +217,41 @@
            (decf (map-count ,map))
            t)))))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; map external function
+(defun make (&key (size 4) (test 'common-lisp:eql) (rehash-threshold 0.75))
+  (declare #.*interface*
+           ((or symbol functor) test)
+           (positive-fixnum size)
+           (number rehash-threshold))
+  (locally 
+   (declare #.*fastest*)
+   (let* ((bitlen (ceiling (log (max 2 size) 2)))
+          (bucket-size (expt 2 bitlen))
+          (buckets (make-array bucket-size :element-type 'bucket 
+                                           :initial-element (sentinel))))
+     (make-map :bitlen bitlen
+               :resize-border (calc-border bucket-size rehash-threshold)
+               :resize-threshold rehash-threshold
+               :buckets buckets
+               :bucket-size bucket-size
+               :functor (get-test test)))))
+
 (defun get (key map &optional default)
   (declare #.*interface*)
-  (funcall (map-get-fn map) key map default))
+  (funcall (functor-get (map-functor map)) key map default))
 
 (defun (setf get) (new-value key map)
   (declare #.*interface*)
-  (funcall (map-set-fn map) new-value key map))
-
-(defun count (map)
-  (declare #.*interface*)
-  (map-count map))
+  (funcall (functor-set (map-functor map)) new-value key map))
 
 (defun remove (key map)
   (declare #.*interface*)
-  (funcall (map-rem-fn map) key map))
+  (funcall (functor-rem (map-functor map)) key map))
 
 (defmacro each ((key value map &optional return-form) &body body)
-  (let ((id (gensym))
-        (node (gensym))
-        (head (gensym)))
+  (gensym-let (id node head)
     `(each-bucket (,head ,id ,map :return ,return-form)
        (loop FOR ,node = ,head THEN (next ,node)
              UNTIL (sentinel? ,node)
@@ -330,3 +278,44 @@
            resize-border (calc-border 4 resize-threshold))
      (fill buckets (sentinel)))
    t))
+
+(defun count (map)
+  (declare #.*interface*)
+  (map-count map))
+
+(defun test-name (map)
+  (declare #.*interface*)
+  (functor-name (map-functor map)))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; test external & internal function
+(defmacro generate-test (hash test &key (name :anonymous))
+  `(make-functor :name ,name
+                 :set (gen-set-fn ,hash ,test)
+                 :get (gen-get-fn ,hash ,test)
+                 :rem (gen-rem-fn ,hash ,test)))
+
+(defmacro define-test (name hash test)
+  `(progn (setf (gethash ',name *test-repository*) 
+                (generate-test ,hash ,test :name ',name))
+          t))
+
+(defun undef-test (name)
+  (remhash name *test-repository*))
+
+(defun find-test (name)
+  (values (gethash name *test-repository*)))
+
+(defun get-test (x)
+  (if (typep x 'functor)
+      x
+    (or (find-test x)
+        (find-test 'common-lisp:eql))))
+
+(locally
+  (declare #.*muffle-note*)
+  (define-test common-lisp:eq #+SBCL sb-impl::eq-hash #-SBCL sxhash eq)
+  (define-test common-lisp:eql #+SBCL sb-impl::eql-hash #-SBCL sxhash eql)
+  (define-test common-lisp:equal #+SBCL sb-impl::equal-hash #-SBCL sxhash equal)
+  (define-test common-lisp:equalp #+SBCL sb-impl::equalp-hash #-SBCL sxhash equalp))
