@@ -19,7 +19,7 @@
 (deftype buckets () '(simple-array bucket))
 
 (eval-when (:compile-toplevel :load-toplevel)
-  (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0)))
+  (defparameter *fastest* '(optimize (speed 3) (safety 0) (debug 0) (compilation-speed 0)))
   (defparameter *interface* '(optimize (speed 3) (safety 2) (debug 1)))
   (defparameter *normal* '(optimize (speed 1) (safety 3) (debug 2)))
   (defparameter *muffle-note* #-SBCL '()
