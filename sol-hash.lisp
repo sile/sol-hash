@@ -27,7 +27,8 @@
   (bucket-size  0 :type positive-fixnum)
   (bitlen       0 :type hashcode-width)
   (count        0 :type positive-fixnum)
-  (upper-border 0 :type positive-fixnum) 
+  (upper-border 0 :type positive-fixnum)
+  (rehash-threshold 0 :type number)
   (hash-fn      t :type hash-fn)
   (test-fn      t :type test-fn))
 
@@ -141,28 +142,30 @@
           (rehash-bucket head bucket-id))
         (incf bitlen)))))
 
-(defun calc-border (size)
-  (declare (positive-fixnum size)
-           #.*muffle-note*)
-  (ceiling (* 0.75 size)))
+(defun calc-border (size threshold)
+  (declare #.*muffle-note*
+           (positive-fixnum size)
+           (number threshold))
+  (ceiling (* size threshold)))
 
 (defun update-size-and-borders (map new-size)
   (declare (positive-fixnum new-size))
-  (with-slots (buckets bucket-size upper-border) (the map map)
+  (with-slots (buckets bucket-size upper-border rehash-threshold) (the map map)
     (when (< bucket-size new-size)
       (setf buckets (adjust-array buckets new-size :element-type 'bucket
                                                    :initial-element (sentinel))))
-    (setf upper-border (calc-border new-size)
+    (setf upper-border (calc-border new-size rehash-threshold)
           bucket-size new-size)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; external function
-(declaim (ftype
-          (function (&key (:hash hash-fn) (:test test-fn) (:size positive-fixnum)) map) 
-          make))
-(defun make (&key (size 4) (hash #'sxhash) (test #'eql))
-  (declare #.*interface*)
+(defun make (&key (size 4) (hash #'sxhash) (test #'eql) (rehash-threshold 0.75))
+  (declare #.*interface*
+           (hash-fn hash)
+           (test-fn test)
+           (positive-fixnum size)
+           (number rehash-threshold))
   (locally 
    (declare #.*fastest*)
    (let* ((bitlen (ceiling (log (max 2 size) 2)))
@@ -172,7 +175,8 @@
      (make-map :hash-fn hash
                :test-fn test
                :bitlen bitlen
-               :upper-border (calc-border bucket-size)
+               :upper-border (calc-border bucket-size rehash-threshold)
+               :rehash-threshold rehash-threshold
                :buckets buckets
                :bucket-size bucket-size))))
 
